@@ -17,16 +17,8 @@ from typing import List
 import struct
 import os
 
-# from utils.util import bbox_transform_inv
+from util import bbox_transform_inv
 
-def bbox_transform_inv(xmin: int, ymin: int, xmax: int, ymax: int) -> List[int]:
-    """Converts coordinates from corners to cx, cy, w, h."""
-    return [
-        (xmax + xmin) / 2,
-        (ymax + ymin) / 2,
-        xmax - xmin,
-        ymax - ymin
-    ]
 
 CLASS_TO_INDEX = {
     'car': 0,
@@ -62,7 +54,7 @@ def grab_images_labels(data_root: str, dataset: str) -> Tuple[List, List]:
 
     image_data, image_labels = [], []
     for i, _id in enumerate(ids):
-        if i % 1000 == 0:
+        if i % 1000 == 0 and i > 0:
             print(' * Loaded', i, 'images.')
         image_path = os.path.join(data_root, 'training/image_2/%s.png' % _id)
         image_data.append(cv2.imread(image_path))
@@ -93,15 +85,16 @@ class KITTIWriter:
         self.filename = filename
         self.record = mx.recordio.MXRecordIO(filename, 'w')
 
-    def byteIter(self, images: List, labels: List):
+    def byteIter(self, images: List, labels: List, struct_fmt: str='ffffi'):
         """Provide generator for images and labels as byte objects."""
+        struct_size = bytes([struct.calcsize(struct_fmt)])
         for image, label in zip(images, labels):
-            image_bytes = cv2.imencode(image, 'jpg')
+            image_bytes = bytearray(cv2.imencode('.jpg', image)[1])
             yield b''.join([
-                len(image_bytes),
+                len(image_bytes).to_bytes(15, 'little'),
                 image_bytes,
-                struct.calcsize('I'),
-                struct.pack('IIII', *label)])
+                struct_size,
+                struct.pack(struct_fmt, *label[0])])
 
     def write(self, images: List, labels: List):
         """Write set of images and labels to the provided file."""
