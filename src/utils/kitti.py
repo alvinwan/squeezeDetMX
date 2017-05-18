@@ -10,7 +10,10 @@ Options:
 import cv2
 import docopt
 import mxnet as mx
+import numpy as np
 from mxnet import io
+from mxnet import ndarray as nd
+from mxnet._ndarray_internal import _cvimresize as imresize
 
 from typing import Tuple
 from typing import List
@@ -85,11 +88,13 @@ class KITTIWriter:
         self.filename = filename
         self.record = mx.recordio.MXRecordIO(filename, 'w')
 
-    def byteIter(self, images: List, labels: List, struct_fmt: str='ffffi'):
+    def byteIter(self, images: List, labels: List, label_fmt: str='ffffi'):
         """Provide generator for images and labels as byte objects."""
-        struct_size = bytes([struct.calcsize(struct_fmt)])
-        for image, label in zip(images, labels):
-            image_bytes = bytearray(cv2.imencode('.jpg', image)[1])
+        struct_size = struct.calcsize(label_fmt).to_bytes(5, 'little')
+        for i, (image, label) in enumerate(zip(images, labels)):
+            if i % 1000 == 0 and i > 0:
+                print(' * Saved', i, 'images.')
+            image_bytes = cv2.imencode('.jpg', image)[1].tobytes()
             yield b''.join([
                 len(image_bytes).to_bytes(15, 'little'),
                 image_bytes,
@@ -107,7 +112,52 @@ class KITTIWriter:
 
 class KITTIIter(io.DataIter):
     """Iterator designed for reading KITTI data, compatible with MXNet"""
-    pass
+
+    def __init__(
+            self,
+            filename: str,
+            label_fmt: str='ffffi',
+            img_shape: Tuple=(1242, 375, 3),
+            batch_size=256):
+        self.filename = filename
+        self.record = mx.recordio.MXRecordIO(filename, 'r')
+        self.bytedata = self.record.read()
+        self.label_fmt = label_fmt
+        self.batch_size = batch_size
+        self.img_shape = img_shape
+
+    def __iter__(self):
+        return self
+
+    def next(self):
+        """Yield the next datum for MXNet to run."""
+        batch_image = nd.empty((batch_size, *self.img_shape))
+        batch_label = nd.empty((batch_size, 4))
+        try:
+            for i in range(self.batch_size):
+                image_size = int.from_bytes(self.step(15), 'little')
+                image = mx.image.imdecode(
+                    (self.step(image_size)).astype(np.float32) - 127.) / 127.
+                image = imresize(image, *self.img_shape)
+                batch_image[i][:] = nd.transpose(image, axes=(2, 0, 1))
+
+                label_size = int.from_bytes(self.__forward(5), 'little')
+                label = struct.unpack(self.label_fmt, self.step(label_size))
+                batch_label[i][:] = label
+            return io.DataBatch([batch_image], [batch_label], batch_size-1-i)
+        except StopIteration:
+            self.record.close()
+            raise StopIteration
+
+    def step(self, steps):
+        """Step forward by `steps` in the byte buffer."""
+        if not self.bytedata:
+            raise StopIteration
+        if steps > len(self.bytedata):
+            print(' * Warning: Failed to read expected data from byte buffer.')
+            raise StopIteration
+        rv, self.bytedata = self.bytedata[:steps], self.bytedata[steps:]
+        return rv
 
 
 if __name__ == '__main__':
