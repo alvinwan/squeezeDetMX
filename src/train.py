@@ -1,7 +1,7 @@
 """Main training script for squeezeDet
 Usage:
     train.py [options]
-    
+
 Options:
     --data=<path>           Path to root directory of data. [default: ../data/]
     --batch_size=<size>     Number of samples in a single batch [default: 20]
@@ -14,7 +14,7 @@ import os.path
 
 from model import SqueezeDet
 from kitti import KITTIIter
-
+from utils import build_module
 
 def main():
     arguments = docopt.docopt(__doc__)
@@ -26,7 +26,7 @@ def main():
     pre_iter = mx.io.PrefetchingIter([train_iter])
 
     model = SqueezeDet()
-    module = build_module(model, 'squeezeDetMX', train_iter)
+    module = build_module(model.net, 'squeezeDetMX', train_iter)
 
     try:
         module.fit(train_data=pre_iter, eval_data=val_iter, num_epoch=50,
