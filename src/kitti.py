@@ -2,7 +2,6 @@
 
 Usage:
     kitti.py [options]
-
 Options:
     --data=<path>       Root folder containing all data. [default: ../data/KITTI]
 """
@@ -20,7 +19,7 @@ from typing import List
 import struct
 import os
 
-from util import bbox_transform_inv
+from utils import bbox_transform_inv
 
 
 CLASS_TO_INDEX = {
@@ -117,37 +116,51 @@ class KITTIIter(io.DataIter):
             self,
             filename: str,
             label_fmt: str='ffffi',
-            img_shape: Tuple=(1242, 375, 3),
-            batch_size=256):
+            img_shape: Tuple=(3, 1242, 375),
+            batch_size=20):
         self.filename = filename
         self.record = mx.recordio.MXRecordIO(filename, 'r')
         self.bytedata = self.record.read()
         self.label_fmt = label_fmt
         self.batch_size = batch_size
         self.img_shape = img_shape
+        self.provide_data = [('image', (batch_size, *img_shape))]
+        self.provide_label = []
 
     def __iter__(self):
         return self
 
+    def __next__(self):
+        """Alias for next(object)."""
+        return self.next()
+
     def next(self):
         """Yield the next datum for MXNet to run."""
-        batch_image = nd.empty((batch_size, *self.img_shape))
-        batch_label = nd.empty((batch_size, 4))
+        batch_image = nd.empty((self.batch_size, *self.img_shape))
+        batch_label = nd.empty((self.batch_size, 4))
         try:
             for i in range(self.batch_size):
-                image_size = int.from_bytes(self.step(15), 'little')
-                image = mx.image.imdecode(
-                    (self.step(image_size)).astype(np.float32) - 127.) / 127.
-                image = imresize(image, *self.img_shape)
-                batch_image[i][:] = nd.transpose(image, axes=(2, 0, 1))
-
-                label_size = int.from_bytes(self.__forward(5), 'little')
-                label = struct.unpack(self.label_fmt, self.step(label_size))
-                batch_label[i][:] = label
+                batch_image[i][:] = self.__read_image()
+                batch_label[i][:] = self.__read_label()
             return io.DataBatch([batch_image], [batch_label], batch_size-1-i)
         except StopIteration:
             self.record.close()
             raise StopIteration
+
+    def __read_image(self):
+        """Read image from the byte buffer."""
+        image_size = int.from_bytes(self.step(15), 'little')
+        image = mx.image.imdecode(
+            (self.step(image_size)).astype(np.float32) - 127.) / 127.
+        image = imresize(image, *self.img_shape)
+        return nd.transpose(image, axes=(2, 0, 1))
+
+    def __read_label(self):
+        """Read label from the byte buffer."""
+        label_size = int.from_bytes(self.step(5), 'little')
+        label = struct.unpack(self.label_fmt, self.step(label_size))
+        # TODO(Alvin): finish label conversion
+        return
 
     def step(self, steps):
         """Step forward by `steps` in the byte buffer."""
