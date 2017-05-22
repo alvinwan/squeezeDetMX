@@ -3,7 +3,7 @@ Usage:
     train.py [options]
 
 Options:
-    --data=<path>           Path to root directory of data. [default: ../data/]
+    --data=<path>           Path to root directory of data. [default: ../data/KITTI]
     --batch_size=<size>     Number of samples in a single batch [default: 20]
 """
 
@@ -25,16 +25,13 @@ def main():
     val_iter = KITTIIter(os.path.join(data_root, 'trainval.brick'))
     pre_iter = mx.io.PrefetchingIter([train_iter])
 
-    import pdb
-    pdb.set_trace()
-
     model = SqueezeDet()
     module = build_module(model.net, 'squeezeDetMX', train_iter)
 
     try:
         module.fit(train_data=pre_iter, eval_data=val_iter, num_epoch=50,
             batch_end_callback=mx.callback.Speedometer(batch_size, 10),
-            eval_metric=mx.metric.CompositeEvalMetric(metrics=[LidarError(), DiscriminatorError()]),
+            eval_metric='acc',
             epoch_end_callback=mx.callback.do_checkpoint('squeezeDetMX', 1))
     except KeyboardInterrupt:
         module.save_params('{}-9999.params'.format(args.module_name))

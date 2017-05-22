@@ -28,8 +28,11 @@ def label():
 
 
 @pytest.fixture
-def tmp_dir():
-    return './tmp'
+def reader(image: np.array, label: List[int]) -> KITTIIter:
+    tmp_path = './tmp/tmp.bin'
+    with KITTIWriter(tmp_path) as writer:
+        writer.write([image], [label])
+    return KITTIIter(tmp_path)
 
 
 def setup_module(module):
@@ -64,13 +67,9 @@ def test_image_byte_iter(image: np.array, label: List[int]):
     assert_images_equal(image, image_reconstructed, 'String formatting faulty.')
 
 
-def test_image_e2e_write_read(image: np.array, label: List[int], tmp_dir: str):
+def test_image_e2e_write_read(image: np.array, label: List[int], reader: KITTIIter):
     """Test that the images were preserved by the custom format."""
-    tmp_path = os.path.join(tmp_dir, 'tmp.bin')
-    with KITTIWriter(tmp_path) as writer:
-        writer.write([image], [label])
-    with KITTIIter(tmp_path) as reader:
-        image_reconstructed = reader.read_image()
+    image_reconstructed = reader.read_image()
     assert_images_equal(image, image_reconstructed, 'File format faulty.')
 
 
@@ -78,6 +77,11 @@ def assert_images_equal(image1: np.array, image2: np.array, msg: str):
     """Assert that two images are equal."""
     average_difference = np.sum(image1 - image2) / np.prod(image1.shape)
     assert average_difference < 110, msg
+
+
+def test_mx_image_format(reader: KITTIIter):
+    mx_image = reader.read_mx_image()
+    assert mx_image.shape == (3, 375, 1242), 'Shape mismatch.'
 
 
 #################
@@ -94,12 +98,8 @@ def test_label_byte_iter(image: np.array, label: List[int]):
     assert np.allclose(label, label_reconstructed), 'String formatting faulty.'
 
 
-def test_label_e2e_write_read(image: np.array, label: List[int], tmp_dir: str):
+def test_label_e2e_write_read(image: np.array, label: List[int], reader: KITTIIter):
     """Test that the labels were preserved by the custom format."""
-    tmp_path = os.path.join(tmp_dir, 'tmp.bin')
-    with KITTIWriter(tmp_path) as writer:
-        writer.write([image], [label])
-    with KITTIIter(tmp_path) as reader:
-        _ = reader.read_image()
-        label_reconstructed = reader.read_label()
+    _ = reader.read_image()
+    label_reconstructed = reader.read_label()
     assert np.allclose(label, label_reconstructed), 'File format faulty.'
