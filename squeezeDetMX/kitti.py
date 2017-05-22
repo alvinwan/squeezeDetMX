@@ -92,7 +92,8 @@ class KITTIWriter:
     def __enter__(self):
         return self
 
-    def byteIter(self, images: List, labels: List, label_fmt: str='ffffi'):
+    @staticmethod
+    def byteIter(images: List, labels: List, label_fmt: str='ffffi'):
         """Provide generator for images and labels as byte objects."""
         struct_size = struct.calcsize(label_fmt).to_bytes(5, 'little')
         for i, (image, label) in enumerate(zip(images, labels)):
@@ -180,10 +181,7 @@ class KITTIIter(io.DataIter):
     def read_label(self):
         """Read label from the byte buffer."""
         label_size = int.from_bytes(self.step(5), 'little')
-        label = struct.unpack(self.label_fmt, self.step(label_size))
-
-
-        return
+        return struct.unpack(self.label_fmt, self.step(label_size))
 
     def step(self, steps):
         """Step forward by `steps` in the byte buffer."""
