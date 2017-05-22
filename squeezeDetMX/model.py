@@ -2,6 +2,10 @@
 
 import mxnet as mx
 
+from utils import NUM_OUT_CHANNELS
+from utils import GRID_WIDTH
+from utils import GRID_HEIGHT
+
 
 class SqueezeDet:
     """Setup the original squeezeDet architecture"""
@@ -10,11 +14,10 @@ class SqueezeDet:
         self.data = mx.sym.Variable('image')
         self.label = mx.sym.Variable('label')
         self.net = self.add_forward(self.data)
-        self.add_interpretation(self.net)
+        self.error = self.add_interpretation(self.net)
 
     def add_forward(self, data: mx.sym.Variable):
         """Add neural network model."""
-        num_output = 15048 * 4
         conv1 = mx.sym.Convolution(
             data, name='conv1', num_filter=64, kernel=(3, 3), stride=(2, 2))
         relu1 = mx.sym.Activation(conv1, act_type='relu')
@@ -33,12 +36,13 @@ class SqueezeDet:
         fire11 = self._fire_layer('fire11', fire10, s1x1=96, e1x1=384, e3x3=384)
         dropout11 = mx.sym.Dropout(fire11, p=0.1, name='drop11')
         return mx.sym.Convolution(
-            dropout11, name='conv12', num_filter=num_output, kernel=(3, 3),
-            stride=(1, 1), pad=(1, 1))
+            dropout11, name='conv12', num_filter=NUM_OUT_CHANNELS,
+            kernel=(3, 3), stride=(1, 1), pad=(1, 1))
 
     def add_interpretation(self, net: mx.sym.Variable):
         """Add loss functions."""
-        pass
+        return mx.symbol.LogisticRegressionOutput(
+            data=net, label=self.label, name='loss')
 
     def _fire_layer(
             self,
@@ -67,6 +71,6 @@ class SqueezeDet:
             sq1x1, name=name+'/e1x1', num_filter=e1x1, kernel=(1, 1), stride=(1, 1))
         relu2 = mx.sym.Activation(ex1x1, act_type='relu')
         ex3x3 = mx.sym.Convolution(
-            sq1x1, name=name+'/e3x3', num_filter=e3x3, kernel=(3, 3), stride=(1, 1))
+            sq1x1, name=name+'/e3x3', num_filter=e3x3, kernel=(3, 3), stride=(1, 1), pad=(1, 1))
         relu3 = mx.sym.Activation(ex3x3, act_type='relu')
-        return mx.sym.Concat(relu2, relu3, dim=3, name=name+'/concat')
+        return mx.sym.Concat(relu2, relu3, dim=1, name=name+'/concat')

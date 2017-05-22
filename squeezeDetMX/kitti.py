@@ -19,9 +19,13 @@ from typing import List
 import struct
 import os
 
-from .utils import bbox_transform_inv
-from .utils import image_to_jpeg_bytes
-from .utils import jpeg_bytes_to_image
+from utils import bbox_transform_inv
+from utils import image_to_jpeg_bytes
+from utils import jpeg_bytes_to_image
+
+from utils import NUM_OUT_CHANNELS
+from utils import GRID_WIDTH
+from utils import GRID_HEIGHT
 
 
 CLASS_TO_INDEX = {
@@ -132,7 +136,8 @@ class KITTIIter(io.DataIter):
         self.batch_size = batch_size
         self.img_shape = img_shape
         self.provide_data = [('image', (batch_size, *img_shape))]
-        self.provide_label = [('label', (batch_size, 15048, 4))]
+        self.provide_label = [('label', (
+            batch_size, NUM_OUT_CHANNELS, GRID_WIDTH, GRID_HEIGHT))]
 
         if filename is not None:
             self.record = mx.recordio.MXRecordIO(filename, 'r')
