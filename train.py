@@ -4,7 +4,7 @@ Usage:
     train.py [options]
 
 Options:
-    --data=<path>           Path to root directory of data. [default: ../data/KITTI]
+    --data=<path>           Path to root directory of data. [default: ./data/KITTI]
     --batch_size=<size>     Number of samples in a single batch [default: 20]
 """
 

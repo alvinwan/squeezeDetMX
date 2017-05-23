@@ -15,6 +15,11 @@ from squeezeDetMX.kitti import KITTIWriter
 from squeezeDetMX.kitti import KITTIIter
 from squeezeDetMX.utils import image_to_jpeg_bytes
 from squeezeDetMX.utils import jpeg_bytes_to_image
+from squeezeDetMX.constants import IMAGE_HEIGHT
+from squeezeDetMX.constants import IMAGE_WIDTH
+from squeezeDetMX.constants import GRID_WIDTH
+from squeezeDetMX.constants import GRID_HEIGHT
+from squeezeDetMX.constants import NUM_OUT_CHANNELS
 
 
 @pytest.fixture
@@ -24,7 +29,7 @@ def image():
 
 @pytest.fixture
 def label():
-    return read_bboxes([open('data/006234.txt').read()])
+    return read_bboxes(open('data/006234.txt').read().splitlines())
 
 
 @pytest.fixture
@@ -67,7 +72,7 @@ def test_image_byte_iter(image: np.array, label: List[int]):
     assert_images_equal(image, image_reconstructed, 'String formatting faulty.')
 
 
-def test_image_multiple_e2e(image: np.array, reader: KITTIIter):
+def test_image_multiple_write_read(image: np.array, reader: KITTIIter):
     """Test that byte data was correctly formatted and parsed."""
     datum = reader.next()
     image_reconstructed = np.transpose(reader.read_image(), axes=(2, 0, 1))
@@ -75,7 +80,7 @@ def test_image_multiple_e2e(image: np.array, reader: KITTIIter):
     assert np.allclose(image, image_reconstructed), 'String formatting faulty.'
 
 
-def test_image_e2e(image: np.array, reader: KITTIIter):
+def test_image_write_read(image: np.array, reader: KITTIIter):
     """Test that the images were preserved by the custom format."""
     image_reconstructed = reader.read_image()
     assert_images_equal(image, image_reconstructed, 'File format faulty.')
@@ -97,6 +102,11 @@ def test_mx_image_format(reader: KITTIIter):
 #################
 
 
+def test_read_bbox(label: List[List[int]]):
+    """Tests that bboxes are read correcty."""
+    assert len(label) == 2, 'Insufficient number of bboxes.'
+
+
 def test_label_byte_iter(image: np.array, label: List[int]):
     """Test that byte data was correctly formatted and parsed."""
     bytedata = next(KITTIWriter.byteIter([image], [label]))
@@ -106,7 +116,7 @@ def test_label_byte_iter(image: np.array, label: List[int]):
     assert np.allclose(label, label_reconstructed), 'String formatting faulty.'
 
 
-def test_label_e2e_write_read(image: np.array, label: List[int], reader: KITTIIter):
+def test_label_write_read(image: np.array, label: List[int], reader: KITTIIter):
     """Test that the labels were preserved by the custom format."""
     _ = reader.read_image()
     label_reconstructed = reader.read_label()
@@ -115,4 +125,19 @@ def test_label_e2e_write_read(image: np.array, label: List[int], reader: KITTIIt
 
 def test_label_count_byte_iter(reader: KITTIIter):
     """Test that byte data was correctly formatted and parsed."""
-    assert len(list(reader)) == 3, 'Premature termination'
+    data = list(reader)
+    label = data[0].label[0]
+    assert len(data) == 3, 'Premature termination'
+
+
+############
+# DATAITER #
+############
+
+
+def test_dataiter_package_dims(reader: KITTIIter):
+    """Tests that dataiter gives data and labels with correct dimensions."""
+    datum = reader.next()
+    image, label = datum.data[0], datum.label[0]
+    assert image.shape == (1, 3, IMAGE_HEIGHT, IMAGE_WIDTH), 'Image wrong size'
+    assert label.shape == (1, NUM_OUT_CHANNELS, GRID_HEIGHT, GRID_WIDTH), 'Label wrong size'

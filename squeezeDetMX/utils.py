@@ -91,3 +91,8 @@ def batch_iou(boxes: np.ndarray, box: np.ndarray) -> float:
     inter = lr*tb
     union = boxes[:,2]*boxes[:,3] + box[2]*box[3] - inter
     return inter/union
+
+
+def size_in_bytes(bytedata: bytes, slot_size: int) -> int:
+    """Compute size of bytedata, in bytes."""
+    return len(bytedata).to_bytes(slot_size, 'little')

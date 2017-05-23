@@ -16,6 +16,11 @@ GRID_HEIGHT = 22
 IMAGE_WIDTH = 1242
 IMAGE_HEIGHT = 375
 
+# Custom binary format for KITTI dataset
+IMAGE_BYTES_SLOT = 15
+BBOXES_BYTES_SLOT = 11
+BBOX_FORMAT = 'ffffi'
+
 # Hardcoded numbers from original repository - will experiment with alternatives
 RANDOM_WIDTHS_HEIGHTS = [
    [  36.,  37.], [ 366., 174.], [ 115.,  59.],
