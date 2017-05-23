@@ -14,16 +14,17 @@ import numpy as np
 import os.path
 
 from squeezeDetMX.model import SqueezeDet
-from squeezeDetMX.kitti import KITTIIter
+from squeezeDetMX.utils import Reader
 from squeezeDetMX.utils import build_module
+
 
 def main():
     arguments = docopt.docopt(__doc__)
     data_root = arguments['--data']
     batch_size = int(arguments['--batch_size'])
 
-    train_iter = KITTIIter(os.path.join(data_root, 'train.brick'))
-    val_iter = KITTIIter(os.path.join(data_root, 'trainval.brick'))
+    train_iter = Reader(os.path.join(data_root, 'train.brick'))
+    val_iter = Reader(os.path.join(data_root, 'trainval.brick'))
     pre_iter = mx.io.PrefetchingIter([train_iter])
 
     model = SqueezeDet()

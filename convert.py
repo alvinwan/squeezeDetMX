@@ -4,14 +4,14 @@ Usage:
     convert.py [options]
 
 Options:
-    --data=<path>       Root folder containing all data. [default: ../data/KITTI]
+    --data=<path>       Root folder containing all data. [default: ./data/KITTI]
 """
 
 import docopt
 
 from squeezeDetMX.kitti import grab_images_labels
-from squeezeDetMX.kitti import KITTIWriter
-from squeezeDetMX.kitti import KITTIIter
+from squeezeDetMX.utils import Writer
+from squeezeDetMX.utils import Reader
 
 
 def main():
@@ -22,12 +22,12 @@ def main():
     X_train, Y_train = grab_images_labels(data_root, 'train')
     X_val, Y_val = grab_images_labels(data_root, 'trainval')
 
-    train_writer = KITTIWriter('train.brick')
+    train_writer = Writer('train.brick')
     train_writer.write(X_train, Y_train)
     train_writer.close()
     print(' * Finished writing train.')
 
-    val_writer = KITTIWriter('trainval.brick')
+    val_writer = Writer('trainval.brick')
     val_writer.write(X_val, Y_val)
     val_writer.close()
     print(' * Finished writing trainval.')
