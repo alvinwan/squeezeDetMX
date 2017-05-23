@@ -7,23 +7,6 @@ import mxnet as mx
 import numpy as np
 
 
-ANCHORS_PER_GRID = 9
-NUM_CLASSES = 3
-NUM_BBOX_ATTRS = 4
-NUM_CONF = 1
-NUM_OUT_CHANNELS = ANCHORS_PER_GRID * (NUM_CLASSES + NUM_BBOX_ATTRS + NUM_CONF)
-GRID_WIDTH = 76
-GRID_HEIGHT = 22
-IMAGE_WIDTH = 1242
-IMAGE_HEIGHT = 375
-
-# Hardcoded numbers from original repository - will experiment with alternatives
-RANDOM_WIDTHS_HEIGHTS = [
-   [  36.,  37.], [ 366., 174.], [ 115.,  59.],
-   [ 162.,  87.], [  38.,  90.], [ 258., 173.],
-   [ 224., 108.], [  78., 170.], [  72.,  43.]]
-
-
 def build_module(symbol, name, data_iter,
         inputs_need_grad=False,
         learning_rate=0.01,

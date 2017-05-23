@@ -25,20 +25,14 @@ from utils import bbox_transform_inv
 from utils import image_to_jpeg_bytes
 from utils import jpeg_bytes_to_image
 
-from utils import ANCHORS_PER_GRID
-from utils import NUM_OUT_CHANNELS
-from utils import GRID_WIDTH
-from utils import GRID_HEIGHT
-from utils import IMAGE_WIDTH
-from utils import IMAGE_HEIGHT
-from utils import RANDOM_WIDTHS_HEIGHTS
-
-
-CLASS_TO_INDEX = {
-    'car': 0,
-    'pedestrian': 1,
-    'cyclist': 2
-}
+from constants import ANCHORS_PER_GRID
+from constants import NUM_OUT_CHANNELS
+from constants import GRID_WIDTH
+from constants import GRID_HEIGHT
+from constants import IMAGE_WIDTH
+from constants import IMAGE_HEIGHT
+from constants import RANDOM_WIDTHS_HEIGHTS
+from constants import CLASS_TO_INDEX
 
 
 def main():

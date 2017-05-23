@@ -27,7 +27,7 @@ def main():
     pre_iter = mx.io.PrefetchingIter([train_iter])
 
     model = SqueezeDet()
-    module = build_module(model.error, 'squeezeDetMX', train_iter)
+    module = build_module(model.error, 'squeezeDetMX', train_iter, ctx=[mx.cpu(0)])
 
     try:
         module.fit(train_data=pre_iter, eval_data=val_iter, num_epoch=50,
