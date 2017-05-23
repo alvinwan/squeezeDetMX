@@ -2,6 +2,7 @@
 
 Usage:
     kitti.py [options]
+
 Options:
     --data=<path>       Root folder containing all data. [default: ../data/KITTI]
 """
@@ -19,13 +20,18 @@ from typing import List
 import struct
 import os
 
+from utils import batch_iou
 from utils import bbox_transform_inv
 from utils import image_to_jpeg_bytes
 from utils import jpeg_bytes_to_image
 
+from utils import ANCHORS_PER_GRID
 from utils import NUM_OUT_CHANNELS
 from utils import GRID_WIDTH
 from utils import GRID_HEIGHT
+from utils import IMAGE_WIDTH
+from utils import IMAGE_HEIGHT
+from utils import RANDOM_WIDTHS_HEIGHTS
 
 
 CLASS_TO_INDEX = {
@@ -86,6 +92,16 @@ def read_bboxes(objects: List[str]) -> List[List]:
     return bboxes
 
 
+def create_anchors(
+        num_x: int=GRID_WIDTH,
+        num_y: int=GRID_HEIGHT,
+        whs: List[List[int]]=RANDOM_WIDTHS_HEIGHTS):
+    """Generates a list of [x, y, w, h], where centers are spread uniformly."""
+    xs = np.linspace(0, IMAGE_WIDTH, num_x+2)[1:-1]  # exclude 0, IMAGE_WIDTH
+    ys = np.linspace(0, IMAGE_HEIGHT, num_x+2)[1:-1]  # exclude 0, IMAGE_HEIGHT
+    return np.vstack([(x, y, w, h) for x in xs for y in ys for w, h in whs])
+
+
 class KITTIWriter:
     """Designed for writing KITTI data as RecordIO objects"""
 
@@ -125,11 +141,13 @@ class KITTIWriter:
 class KITTIIter(io.DataIter):
     """Iterator designed for reading KITTI data, compatible with MXNet"""
 
+    anchors = create_anchors()
+
     def __init__(
             self,
             filename: str=None,
             label_fmt: str='ffffi',
-            img_shape: Tuple=(3, 1242, 375),
+            img_shape: Tuple=(3, IMAGE_HEIGHT, IMAGE_WIDTH),
             batch_size=20):
         self.filename = filename
         self.label_fmt = label_fmt
@@ -137,7 +155,7 @@ class KITTIIter(io.DataIter):
         self.img_shape = img_shape
         self.provide_data = [('image', (batch_size, *img_shape))]
         self.provide_label = [('label', (
-            batch_size, NUM_OUT_CHANNELS, GRID_WIDTH, GRID_HEIGHT))]
+            batch_size, NUM_OUT_CHANNELS, GRID_HEIGHT, GRID_WIDTH))]
 
         if filename is not None:
             self.record = mx.recordio.MXRecordIO(filename, 'r')
@@ -167,26 +185,67 @@ class KITTIIter(io.DataIter):
         batch_label = nd.empty((self.batch_size, 4))
         try:
             for i in range(self.batch_size):
-                batch_image[i][:] = self.read_mx_image()
+                batch_image[i][:] = self.image_to_mx(self.read_image())
                 batch_label[i][:] = self.read_label()
+            batch_label = self.batch_label_to_mx(batch_label)
             return io.DataBatch([batch_image], [batch_label], batch_size-1-i)
         except StopIteration:
             self.record.close()
-            raise StopIteration
 
     def read_image(self):
         """Read image from the byte buffer."""
         image_size = int.from_bytes(self.step(15), 'little')
         return jpeg_bytes_to_image(self.step(image_size))
 
-    def read_mx_image(self):
-        """Read image from the byte buffer, prepared for MXNet."""
-        return nd.transpose(mx.nd.array(self.read_image()), axes=(2, 0, 1))
+    @staticmethod
+    def image_to_mx(image: np.array) -> mx.nd.array:
+        """Convert a standard numpy array into MXNet-ready arrays."""
+        return nd.transpose(
+            imresize(  # TODO(Alvin): imresize should not be needed!
+                mx.nd.array(image), IMAGE_WIDTH, IMAGE_HEIGHT, interp=2),
+                axes=(2, 0, 1))
 
     def read_label(self):
         """Read label from the byte buffer."""
         label_size = int.from_bytes(self.step(5), 'little')
-        return struct.unpack(self.label_fmt, self.step(label_size))
+        return np.array(struct.unpack(self.label_fmt, self.step(label_size)))[:4]
+
+    @staticmethod
+    def batch_label_to_mx(label: List[np.ndarray]) -> mx.nd.array:
+        """Convert standard label into SqueezeDet-specific formats.
+
+        Input is a list of bounding boxes, with x, y, width, and height.
+        However, SqueezeDet expects a grid of data around 72 channels deep. The
+        grid is 76 wide and 22 high, where each grid contains 9 anchors. For
+        each anchor, the output should hold information for a bounding box.
+
+        1. Compute distance. First, use IOU as a metric, and if all IOUs are 0,
+        use Euclidean distance.
+        2. Assign this bbox to the closest anchor index.
+        3. Fill in the big matrix accordingly: Compute the grid that this anchor
+        belongs to, and compute the relative position of the anchor w.r.t. the
+        grid.
+        """
+        taken_anchor_indices = set()
+        final_label = np.zeros((GRID_WIDTH, GRID_HEIGHT, NUM_OUT_CHANNELS))
+        for bbox in label:
+            # 1. Compute distance
+            dists = batch_iou(KITTIIter.anchors, bbox)
+            if max(metrics) == 0:
+                dists = [np.linalg.norm(bbox, anchor) for anchor in KITTIITer.anchors]
+
+            # 2. Assign to anchor
+            anchor_index = np.argmax(metrics)
+            if anchor_index in taken_anchor_indices:
+                continue
+            taken_anchor_indices.add(anchor_index)
+
+            # 3. Place in grid
+            anchor_x, anchor_y = self.anchors[anchor_index][:2]
+            grid_x, grid_y = anchor_x // GRID_WIDTH, anchor_y // GRID_HEIGHT
+            air = anchor_index % ANCHORS_PER_GRID
+            final_label[grid_x][grid_y][air: air+4] = bbox
+        return final_label
 
     def step(self, steps):
         """Step forward by `steps` in the byte buffer."""

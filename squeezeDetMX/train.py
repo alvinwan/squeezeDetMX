@@ -1,4 +1,5 @@
 """Main training script for squeezeDet
+
 Usage:
     train.py [options]
 

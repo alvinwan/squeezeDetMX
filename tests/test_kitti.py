@@ -80,7 +80,7 @@ def assert_images_equal(image1: np.array, image2: np.array, msg: str):
 
 
 def test_mx_image_format(reader: KITTIIter):
-    mx_image = reader.read_mx_image()
+    mx_image = KITTIIter.image_to_mx(reader.read_image())
     assert mx_image.shape == (3, 375, 1242), 'Shape mismatch.'
 
 

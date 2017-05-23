@@ -14,6 +14,14 @@ NUM_CONF = 1
 NUM_OUT_CHANNELS = ANCHORS_PER_GRID * (NUM_CLASSES + NUM_BBOX_ATTRS + NUM_CONF)
 GRID_WIDTH = 76
 GRID_HEIGHT = 22
+IMAGE_WIDTH = 1242
+IMAGE_HEIGHT = 375
+
+# Hardcoded numbers from original repository - will experiment with alternatives
+RANDOM_WIDTHS_HEIGHTS = [
+   [  36.,  37.], [ 366., 174.], [ 115.,  59.],
+   [ 162.,  87.], [  38.,  90.], [ 258., 173.],
+   [ 224., 108.], [  78., 170.], [  72.,  43.]]
 
 
 def build_module(symbol, name, data_iter,
@@ -65,9 +73,37 @@ def bbox_transform_inv(xmin: int, ymin: int, xmax: int, ymax: int) -> List[int]:
     ]
 
 
-def image_to_jpeg_bytes(image) -> bytes:
+def image_to_jpeg_bytes(image: np.ndarray) -> bytes:
     return cv2.imencode('.jpg', image)[1].tobytes()
 
 
 def jpeg_bytes_to_image(bytedata: bytes) -> np.array:
     return mx.image.imdecode(bytedata, to_rgb=False).asnumpy().astype(np.float32)
+
+
+def batch_iou(boxes: np.ndarray, box: np.ndarray) -> float:
+    """
+    Compute the Intersection-Over-Union of a batch of boxes with another
+    box.
+
+    From original repository, written by Bichen Wu
+
+    Args:
+        boxes: 2D array of [cx, cy, width, height].
+        box: a single array of [cx, cy, width, height]
+    Returns:
+        ious: array of a float number in range [0, 1].
+    """
+    lr = np.maximum(
+        np.minimum(boxes[:,0]+0.5*boxes[:,2], box[0]+0.5*box[2]) - \
+        np.maximum(boxes[:,0]-0.5*boxes[:,2], box[0]-0.5*box[2]),
+        0
+    )
+    tb = np.maximum(
+        np.minimum(boxes[:,1]+0.5*boxes[:,3], box[1]+0.5*box[3]) - \
+        np.maximum(boxes[:,1]-0.5*boxes[:,3], box[1]-0.5*box[3]),
+        0
+    )
+    inter = lr*tb
+    union = boxes[:,2]*boxes[:,3] + box[2]*box[3] - inter
+    return inter/union
