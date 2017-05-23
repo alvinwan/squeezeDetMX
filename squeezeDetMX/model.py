@@ -2,9 +2,9 @@
 
 import mxnet as mx
 
-from constants import NUM_OUT_CHANNELS
-from constants import GRID_WIDTH
-from constants import GRID_HEIGHT
+from .constants import NUM_OUT_CHANNELS
+from .constants import GRID_WIDTH
+from .constants import GRID_HEIGHT
 
 
 class SqueezeDet:

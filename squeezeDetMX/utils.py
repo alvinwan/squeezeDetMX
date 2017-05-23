@@ -1,6 +1,7 @@
 """Utilities for squeezeDet's MXNet implementation."""
 
 from typing import List
+from mxnet import ndarray as nd
 
 import cv2
 import mxnet as mx

@@ -20,19 +20,19 @@ from typing import List
 import struct
 import os
 
-from utils import batch_iou
-from utils import bbox_transform_inv
-from utils import image_to_jpeg_bytes
-from utils import jpeg_bytes_to_image
+from .utils import batch_iou
+from .utils import bbox_transform_inv
+from .utils import image_to_jpeg_bytes
+from .utils import jpeg_bytes_to_image
 
-from constants import ANCHORS_PER_GRID
-from constants import NUM_OUT_CHANNELS
-from constants import GRID_WIDTH
-from constants import GRID_HEIGHT
-from constants import IMAGE_WIDTH
-from constants import IMAGE_HEIGHT
-from constants import RANDOM_WIDTHS_HEIGHTS
-from constants import CLASS_TO_INDEX
+from .constants import ANCHORS_PER_GRID
+from .constants import NUM_OUT_CHANNELS
+from .constants import GRID_WIDTH
+from .constants import GRID_HEIGHT
+from .constants import IMAGE_WIDTH
+from .constants import IMAGE_HEIGHT
+from .constants import RANDOM_WIDTHS_HEIGHTS
+from .constants import CLASS_TO_INDEX
 
 
 def main():
@@ -175,16 +175,25 @@ class KITTIIter(io.DataIter):
 
     def next(self):
         """Yield the next datum for MXNet to run."""
-        batch_image = nd.empty((self.batch_size, *self.img_shape))
-        batch_label = nd.empty((self.batch_size, 4))
-        try:
-            for i in range(self.batch_size):
-                batch_image[i][:] = self.image_to_mx(self.read_image())
-                batch_label[i][:] = self.read_label()
-            batch_label = self.batch_label_to_mx(batch_label)
-            return io.DataBatch([batch_image], [batch_label], batch_size-1-i)
-        except StopIteration:
-            self.record.close()
+        batch_images = nd.empty((self.batch_size, *self.img_shape))
+        batch_labels = np.zeros((self.batch_size, 5))
+        for i in range(self.batch_size):
+            try:
+                batch_images[i][:] = self.image_to_mx(self.read_image())
+                batch_labels[i][:] = self.read_label()
+            except StopIteration:
+                if self.record:
+                    self.record.close()
+                if i == 0:
+                    raise StopIteration
+                else:
+                    batch_images = batch_images[i:]
+                    batch_labels = batch_labels[i:]
+                    break
+            if self.record:
+                self.bytedata = self.record.read()
+        batch_labels = self.batch_label_to_mx(batch_labels)
+        return io.DataBatch([batch_images], [batch_labels], self.batch_size-1-i)
 
     def read_image(self):
         """Read image from the byte buffer."""
@@ -192,20 +201,20 @@ class KITTIIter(io.DataIter):
         return jpeg_bytes_to_image(self.step(image_size))
 
     @staticmethod
-    def image_to_mx(image: np.array) -> mx.nd.array:
+    def image_to_mx(image: np.array) -> nd.array:
         """Convert a standard numpy array into MXNet-ready arrays."""
         return nd.transpose(
             imresize(  # TODO(Alvin): imresize should not be needed!
-                mx.nd.array(image), IMAGE_WIDTH, IMAGE_HEIGHT, interp=2),
+                nd.array(image), IMAGE_WIDTH, IMAGE_HEIGHT, interp=2),
                 axes=(2, 0, 1))
 
     def read_label(self):
         """Read label from the byte buffer."""
         label_size = int.from_bytes(self.step(5), 'little')
-        return np.array(struct.unpack(self.label_fmt, self.step(label_size)))[:4]
+        return np.array(struct.unpack(self.label_fmt, self.step(label_size)))
 
     @staticmethod
-    def batch_label_to_mx(label: List[np.ndarray]) -> mx.nd.array:
+    def batch_label_to_mx(label: List[np.array]) -> nd.array:
         """Convert standard label into SqueezeDet-specific formats.
 
         Input is a list of bounding boxes, with x, y, width, and height.
@@ -225,21 +234,22 @@ class KITTIIter(io.DataIter):
         for bbox in label:
             # 1. Compute distance
             dists = batch_iou(KITTIIter.anchors, bbox)
-            if max(metrics) == 0:
-                dists = [np.linalg.norm(bbox, anchor) for anchor in KITTIITer.anchors]
+            # if max(dists) == 0:
+                # dists = [np.linalg.norm(bbox[:4] - anchor) for anchor in KITTIIter.anchors]
 
             # 2. Assign to anchor
-            anchor_index = np.argmax(metrics)
+            anchor_index = np.argmax(dists)
             if anchor_index in taken_anchor_indices:
                 continue
             taken_anchor_indices.add(anchor_index)
 
             # 3. Place in grid
-            anchor_x, anchor_y = self.anchors[anchor_index][:2]
-            grid_x, grid_y = anchor_x // GRID_WIDTH, anchor_y // GRID_HEIGHT
+            anchor_x, anchor_y = KITTIIter.anchors[anchor_index][:2]
+            grid_x = int(anchor_x // GRID_WIDTH)
+            grid_y = int(anchor_y // GRID_HEIGHT)
             air = anchor_index % ANCHORS_PER_GRID
-            final_label[grid_x][grid_y][air: air+4] = bbox
-        return final_label
+            final_label[grid_x][grid_y][air: air+4] = bbox[:4]
+        return nd.array(final_label)
 
     def step(self, steps):
         """Step forward by `steps` in the byte buffer."""

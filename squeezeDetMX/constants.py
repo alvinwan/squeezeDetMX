@@ -1,6 +1,5 @@
 """Constants for squeezeDetMX"""
 
-
 CLASS_TO_INDEX = {
     'car': 0,
     'pedestrian': 1,

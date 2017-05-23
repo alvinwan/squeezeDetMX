@@ -13,9 +13,9 @@ import mxnet as mx
 import numpy as np
 import os.path
 
-from model import SqueezeDet
-from kitti import KITTIIter
-from utils import build_module
+from squeezeDetMX.model import SqueezeDet
+from squeezeDetMX.kitti import KITTIIter
+from squeezeDetMX.utils import build_module
 
 def main():
     arguments = docopt.docopt(__doc__)

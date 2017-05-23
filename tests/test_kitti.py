@@ -31,8 +31,8 @@ def label():
 def reader(image: np.array, label: List[int]) -> KITTIIter:
     tmp_path = './tmp/tmp.bin'
     with KITTIWriter(tmp_path) as writer:
-        writer.write([image], [label])
-    return KITTIIter(tmp_path)
+        writer.write([image] * 3, [label] * 3)
+    return KITTIIter(tmp_path, batch_size=1)
 
 
 def setup_module(module):
@@ -67,7 +67,15 @@ def test_image_byte_iter(image: np.array, label: List[int]):
     assert_images_equal(image, image_reconstructed, 'String formatting faulty.')
 
 
-def test_image_e2e_write_read(image: np.array, label: List[int], reader: KITTIIter):
+def test_image_multiple_e2e(image: np.array, reader: KITTIIter):
+    """Test that byte data was correctly formatted and parsed."""
+    datum = reader.next()
+    image_reconstructed = np.transpose(reader.read_image(), axes=(2, 0, 1))
+    image = datum.data[0].asnumpy().reshape(image_reconstructed.shape)
+    assert np.allclose(image, image_reconstructed), 'String formatting faulty.'
+
+
+def test_image_e2e(image: np.array, reader: KITTIIter):
     """Test that the images were preserved by the custom format."""
     image_reconstructed = reader.read_image()
     assert_images_equal(image, image_reconstructed, 'File format faulty.')
@@ -103,3 +111,8 @@ def test_label_e2e_write_read(image: np.array, label: List[int], reader: KITTIIt
     _ = reader.read_image()
     label_reconstructed = reader.read_label()
     assert np.allclose(label, label_reconstructed), 'File format faulty.'
+
+
+def test_label_count_byte_iter(reader: KITTIIter):
+    """Test that byte data was correctly formatted and parsed."""
+    assert len(list(reader)) == 3, 'Premature termination'
