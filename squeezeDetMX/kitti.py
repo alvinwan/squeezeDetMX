@@ -1,12 +1,3 @@
-"""Reads raw KITTI data and preprocesses data for RecordIO.
-
-Usage:
-    kitti.py [options]
-
-Options:
-    --data=<path>       Root folder containing all data. [default: ../data/KITTI]
-"""
-
 import cv2
 import docopt
 import mxnet as mx
@@ -37,25 +28,6 @@ from .constants import CLASS_TO_INDEX
 from .constants import IMAGE_BYTES_SLOT
 from .constants import BBOXES_BYTES_SLOT
 from .constants import BBOX_FORMAT
-
-
-def main():
-    """Translating KITTI data into RecordIO"""
-    arguments = docopt.docopt(__doc__)
-    data_root = arguments['--data']
-
-    X_train, Y_train = grab_images_labels(data_root, 'train')
-    X_val, Y_val = grab_images_labels(data_root, 'trainval')
-
-    train_writer = KITTIWriter('train.brick')
-    train_writer.write(X_train, Y_train)
-    train_writer.close()
-    print(' * Finished writing train.')
-
-    val_writer = KITTIWriter('trainval.brick')
-    val_writer.write(X_val, Y_val)
-    val_writer.close()
-    print(' * Finished writing trainval.')
 
 
 def grab_images_labels(data_root: str, dataset: str) -> Tuple[List, List]:
@@ -280,7 +252,3 @@ class KITTIIter(io.DataIter):
 
     def __exit__(self, exception_type, exception_value, traceback):
         self.close()
-
-
-if __name__ == '__main__':
-    main()
