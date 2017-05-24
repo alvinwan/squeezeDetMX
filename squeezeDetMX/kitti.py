@@ -28,7 +28,7 @@ def grab_images_labels(data_root: str, dataset: str) -> Tuple[List, List]:
     return image_data, image_labels
 
 
-def read_bboxes(objects: List[str]) -> List[List]:
+def read_bboxes(objects: List[str]) -> List[List[float]]:
     """Read bounding boxes from provided serialized data."""
     bboxes = []
     for object_string in objects:

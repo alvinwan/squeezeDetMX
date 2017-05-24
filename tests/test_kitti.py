@@ -8,7 +8,7 @@ from squeezeDetMX.kitti import read_bboxes
 
 
 @pytest.fixture
-def label():
+def label() -> List[List[float]]:
     return read_bboxes(open('data/006234.txt').read().splitlines())
 
 

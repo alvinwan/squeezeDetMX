@@ -3,8 +3,6 @@
 import mxnet as mx
 
 from .constants import NUM_OUT_CHANNELS
-from .constants import GRID_WIDTH
-from .constants import GRID_HEIGHT
 
 
 class SqueezeDet:
@@ -50,8 +48,7 @@ class SqueezeDet:
             inputs: mx.sym.Variable,
             s1x1: int,
             e1x1: int,
-            e3x3: int,
-            freeze: bool=False):
+            e3x3: int):
         """Fire layer constructor. Written by Bichen Wu from UC Berkeley.
 
         Args:
@@ -68,9 +65,9 @@ class SqueezeDet:
             inputs, name=name+'/s1x1', num_filter=s1x1, kernel=(1, 1), stride=(1, 1))
         relu1 = mx.sym.Activation(sq1x1, act_type='relu')
         ex1x1 = mx.sym.Convolution(
-            sq1x1, name=name+'/e1x1', num_filter=e1x1, kernel=(1, 1), stride=(1, 1))
+            relu1, name=name+'/e1x1', num_filter=e1x1, kernel=(1, 1), stride=(1, 1))
         relu2 = mx.sym.Activation(ex1x1, act_type='relu')
         ex3x3 = mx.sym.Convolution(
-            sq1x1, name=name+'/e3x3', num_filter=e3x3, kernel=(3, 3), stride=(1, 1), pad=(1, 1))
+            relu1, name=name+'/e3x3', num_filter=e3x3, kernel=(3, 3), stride=(1, 1), pad=(1, 1))
         relu3 = mx.sym.Activation(ex3x3, act_type='relu')
         return mx.sym.Concat(relu2, relu3, dim=1, name=name+'/concat')

@@ -22,12 +22,12 @@ from squeezeDetMX.constants import NUM_OUT_CHANNELS
 
 
 @pytest.fixture
-def image():
+def image() -> np.ndarray:
     return cv2.imread('data/006234.png')
 
 
 @pytest.fixture
-def label():
+def label() -> List[List[float]]:
     return read_bboxes(open('data/006234.txt').read().splitlines())
 
 
@@ -63,7 +63,7 @@ def test_image_byte_conversion(image: np.array):
     assert_images_equal(image, image_reconstructed, 'Byte conversion faulty.')
 
 
-def test_image_byte_iter(image: np.array, label: List[int]):
+def test_image_byte_iter(image: np.array, label: List[List[float]]):
     """Test that byte data was correctly formatted and parsed."""
     bytedata = next(Writer.byteIter([image], [label]))
     with Reader.from_bytes(bytedata) as reader:
@@ -71,7 +71,7 @@ def test_image_byte_iter(image: np.array, label: List[int]):
     assert_images_equal(image, image_reconstructed, 'String formatting faulty.')
 
 
-def test_image_multiple_write_read(image: np.array, reader: Reader):
+def test_image_multiple_write_read(reader: Reader):
     """Test that byte data was correctly formatted and parsed."""
     datum = reader.next()
     image_reconstructed = np.transpose(reader.read_image(), axes=(2, 0, 1))
@@ -101,7 +101,7 @@ def test_mx_image_format(reader: Reader):
 #################
 
 
-def test_label_byte_iter(image: np.array, label: List[int]):
+def test_label_byte_iter(image: np.array, label: List[List[float]]):
     """Test that byte data was correctly formatted and parsed."""
     bytedata = next(Writer.byteIter([image], [label]))
     with Reader.from_bytes(bytedata) as reader:
@@ -110,7 +110,7 @@ def test_label_byte_iter(image: np.array, label: List[int]):
     assert np.allclose(label, label_reconstructed), 'String formatting faulty.'
 
 
-def test_label_write_read(image: np.array, label: List[int], reader: Reader):
+def test_label_write_read(label: List[List[float]], reader: Reader):
     """Test that the labels were preserved by the custom format."""
     _ = reader.read_image()
     label_reconstructed = reader.read_label()
@@ -120,7 +120,6 @@ def test_label_write_read(image: np.array, label: List[int], reader: Reader):
 def test_label_count_byte_iter(reader: Reader):
     """Test that byte data was correctly formatted and parsed."""
     data = list(reader)
-    label = data[0].label[0]
     assert len(data) == 3, 'Premature termination'
 
 

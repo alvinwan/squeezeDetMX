@@ -10,8 +10,8 @@ Options:
 
 import docopt
 import mxnet as mx
-import numpy as np
 import os.path
+import time
 
 from squeezeDetMX.model import SqueezeDet
 from squeezeDetMX.utils import Reader
@@ -31,12 +31,17 @@ def main():
     module = build_module(model.error, 'squeezeDetMX', train_iter, ctx=[mx.cpu(0)])
 
     try:
-        module.fit(train_data=pre_iter, eval_data=val_iter, num_epoch=50,
+        module.fit(
+            train_data=pre_iter,
+            eval_data=val_iter,
+            num_epoch=50,
             batch_end_callback=mx.callback.Speedometer(batch_size, 10),
             eval_metric='acc',
             epoch_end_callback=mx.callback.do_checkpoint('squeezeDetMX', 1))
     except KeyboardInterrupt:
-        module.save_params('{}-9999.params'.format(args.module_name))
+        module.save_params('squeezeDet-{}-9999.params'.format(
+            str(time.time())[-5:]))
+
 
 if __name__ == '__main__':
     main()
