@@ -10,6 +10,9 @@ from mxnet._ndarray_internal import _cvimresize as imresize
 from typing import Tuple
 from typing import List
 import struct
+import logging
+import os
+import os.path
 
 from .constants import ANCHORS_PER_GRID
 from .constants import NUM_OUT_CHANNELS
@@ -127,6 +130,20 @@ def create_anchors(
     return np.vstack([(x, y, w, h) for x in xs for y in ys for w, h in whs])
 
 
+def setup_logger(path: str='./logs/model.log'):
+    """Setup the logs are ./logs/model.log"""
+    os.makedirs(os.path.dirname(path))
+    log_formatter = logging.Formatter('%(asctime)s %(message)s', '%y%m%d %H:%M:%S')
+    logger = logging.getLogger()
+    file_handler = logging.FileHandler(path)
+    file_handler.setFormatter(log_formatter)
+    logger.addHandler(file_handler)
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(log_formatter)
+    logger.addHandler(stream_handler)
+    logger.setLevel(logging.DEBUG)
+
+
 class Writer:
     """Designed for writing images and labels as RecordIO objects"""
 
@@ -210,17 +227,8 @@ class Reader(io.DataIter):
         batch_images = nd.empty((self.batch_size, *self.img_shape))
         batch_labels = []
         for i in range(self.batch_size):
-            try:
-                batch_images[i][:] = self.image_to_mx(self.read_image())
-                batch_labels.append(self.read_label())
-            except StopIteration:
-                if self.record:
-                    self.record.close()
-                if i == 0:
-                    raise StopIteration
-                else:
-                    batch_images = batch_images[i:]
-                    break
+            batch_images[i][:] = self.image_to_mx(self.read_image())
+            batch_labels.append(self.read_label())
             if self.record:
                 self.bytedata = self.record.read()
         batch_labels = self.batch_label_to_mx(batch_labels)
@@ -304,6 +312,10 @@ class Reader(io.DataIter):
     def close(self):
         if self.record:
             self.record.close()
+
+    def reset(self):
+        if self.record:
+            self.record.reset()
 
     def __exit__(self, exception_type, exception_value, traceback):
         self.close()

@@ -16,9 +16,11 @@ import time
 from squeezeDetMX.model import SqueezeDet
 from squeezeDetMX.utils import Reader
 from squeezeDetMX.utils import build_module
+from squeezeDetMX.utils import setup_logger
 
 
 def main():
+    setup_logger()
     arguments = docopt.docopt(__doc__)
     data_root = arguments['--data']
     batch_size = int(arguments['--batch_size'])
