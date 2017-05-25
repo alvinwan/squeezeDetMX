@@ -16,6 +16,8 @@ import os.path
 
 from .constants import ANCHORS_PER_GRID
 from .constants import NUM_OUT_CHANNELS
+from .constants import NUM_BBOX_ATTRS
+from .constants import NUM_CLASSES
 from .constants import GRID_WIDTH
 from .constants import GRID_HEIGHT
 from .constants import IMAGE_WIDTH
@@ -87,12 +89,34 @@ def jpeg_bytes_to_image(bytedata: bytes) -> np.array:
     return mx.image.imdecode(bytedata, to_rgb=False).asnumpy().astype(np.float32)
 
 
-def batch_iou(boxes: np.ndarray, box: np.ndarray) -> float:
+def mean_squared_loss(out: nd.array, label: nd.array, n_axes: int=4) -> float:
+    return mx.sym.sum(mx.sym.square(out - label), axis=tuple(range(n_axes)))
+
+
+def iou(box1: nd.array, box2: nd.array) -> nd.array:
+    """Compute Intersection-Over-Union of a symbol and a box.
+
+    From original repository, written by Bichen Wu
+    """
+    lr = nd.maximum(
+        nd.minimum(box1[0] + 0.5 * box1[2], box2[0] + 0.5 * box2[2]) -
+        nd.maximum(box1[0] - 0.5 * box1[2], box2[0] - 0.5 * box2[2]),
+        0
+    )
+    tb = nd.maximum(
+        nd.minimum(box1[1] + 0.5 * box1[3], box2[1] + 0.5 * box2[3]) -
+        nd.maximum(box1[1] - 0.5 * box1[3], box2[1] - 0.5 * box2[3]),
+        0
+    )
+    inter = lr * tb
+    union = box1[2] * box1[2] + box2[2] * box2[3] - inter
+    return inter / union
+
+
+def batch_iou(boxes: nd.array, box: nd.array) -> nd.array:
     """
     Compute the Intersection-Over-Union of a batch of boxes with another
     box.
-
-    From original repository, written by Bichen Wu
 
     Args:
         boxes: 2D array of [cx, cy, width, height].
@@ -100,19 +124,9 @@ def batch_iou(boxes: np.ndarray, box: np.ndarray) -> float:
     Returns:
         ious: array of a float number in range [0, 1].
     """
-    lr = np.maximum(
-        np.minimum(boxes[:,0]+0.5*boxes[:,2], box[0]+0.5*box[2]) - \
-        np.maximum(boxes[:,0]-0.5*boxes[:,2], box[0]-0.5*box[2]),
-        0
-    )
-    tb = np.maximum(
-        np.minimum(boxes[:,1]+0.5*boxes[:,3], box[1]+0.5*box[3]) - \
-        np.maximum(boxes[:,1]-0.5*boxes[:,3], box[1]-0.5*box[3]),
-        0
-    )
-    inter = lr*tb
-    union = boxes[:,2]*boxes[:,3] + box[2]*box[3] - inter
-    return inter/union
+    n = boxes.shape[0]
+    repacked_boxes = [nd.slice(boxes, (0, i), (n, i+1)) for i in range(4)]
+    return iou(repacked_boxes, box)
 
 
 def size_in_bytes(bytedata: bytes, slot_size: int) -> bytes:
@@ -123,16 +137,17 @@ def size_in_bytes(bytedata: bytes, slot_size: int) -> bytes:
 def create_anchors(
         num_x: int=GRID_WIDTH,
         num_y: int=GRID_HEIGHT,
-        whs: List[List[int]]=RANDOM_WIDTHS_HEIGHTS):
+        whs: List[List[int]]=RANDOM_WIDTHS_HEIGHTS) -> nd.array:
     """Generates a list of [x, y, w, h], where centers are spread uniformly."""
     xs = np.linspace(0, IMAGE_WIDTH, num_x+2)[1:-1]  # exclude 0, IMAGE_WIDTH
     ys = np.linspace(0, IMAGE_HEIGHT, num_y+2)[1:-1]  # exclude 0, IMAGE_HEIGHT
-    return np.vstack([(x, y, w, h) for x in xs for y in ys for w, h in whs])
+    return nd.array(np.vstack(
+        [(x, y, w, h) for x in xs for y in ys for w, h in whs]))
 
 
 def setup_logger(path: str='./logs/model.log'):
     """Setup the logs are ./logs/model.log"""
-    os.makedirs(os.path.dirname(path))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     log_formatter = logging.Formatter('%(asctime)s %(message)s', '%y%m%d %H:%M:%S')
     logger = logging.getLogger()
     file_handler = logging.FileHandler(path)
@@ -191,7 +206,7 @@ class Reader(io.DataIter):
             filename: str=None,
             label_fmt: str='ffffi',
             img_shape: Tuple=(3, IMAGE_HEIGHT, IMAGE_WIDTH),
-            batch_size=20):
+            batch_size: int=20):
         self.filename = filename
         self.label_fmt = label_fmt
         self.batch_size = batch_size
@@ -265,38 +280,54 @@ class Reader(io.DataIter):
         Input is a list of bounding boxes, with x, y, width, and height.
         However, SqueezeDet expects a grid of data around 72 channels deep. The
         grid is 76 wide and 22 high, where each grid contains 9 anchors. For
-        each anchor, the output should hold information for a bounding box.
+        each anchor, the output should hold information for a bounding box:
+
+            - placeholder for confidence score
+            - bounding box attributes: x, y, w, h
+            - one-hot class probabilities
 
         1. Compute distance. First, use IOU as a metric, and if all IOUs are 0,
         use Euclidean distance.
         2. Assign this bbox to the closest anchor index.
         3. Fill in the big matrix accordingly: Compute the grid that this anchor
         belongs to, and compute the relative position of the anchor w.r.t. the
-        grid.
+        grid. For each grid cell, we fill:
+
+            - first ANCHORS_PER_GRID * NUM_BBOX_ATTRS with bounding box attrs
+            - next ANCHORS_PER_GRID * ONE with nothing
+            - last ANCHORS_PER_GRID * NUM_CLASSES with one hot class labels
         """
         taken_anchor_indices = set()
         final_label = np.zeros((
             len(labels), NUM_OUT_CHANNELS, GRID_HEIGHT, GRID_WIDTH))
+        one_hot_mapping = np.eye(NUM_CLASSES)
         for i, bboxes in enumerate(labels):
             for bbox in bboxes:
                 # 1. Compute distance
-                dists = batch_iou(Reader.anchors, bbox)
-                if max(dists) == 0:
+                dists = batch_iou(Reader.anchors, nd.array(bbox))
+                if nd.max(dists).asscalar() == 0:
                     dists = [np.linalg.norm(bbox[:4] - anchor)
                              for anchor in Reader.anchors]
 
                 # 2. Assign to anchor
-                anchor_index = np.argmax(dists)
+                anchor_index = int(nd.argmax(dists, axis=0).asscalar())
                 if anchor_index in taken_anchor_indices:
                     continue
                 taken_anchor_indices.add(anchor_index)
 
                 # 3. Place in grid
                 anchor_x, anchor_y = Reader.anchors[anchor_index][:2]
-                grid_x = int(anchor_x // GRID_WIDTH)
-                grid_y = int(anchor_y // GRID_HEIGHT)
+                grid_x = int(anchor_x.asscalar() // GRID_WIDTH)
+                grid_y = int(anchor_y.asscalar() // GRID_HEIGHT)
                 air = anchor_index % ANCHORS_PER_GRID
-                final_label[i, air: air+4, grid_x, grid_y] = bbox[:4]
+
+                st = air * NUM_BBOX_ATTRS
+                final_label[i, st: st + NUM_BBOX_ATTRS, grid_x, grid_y] = \
+                    bbox[:NUM_BBOX_ATTRS]
+
+                st = ANCHORS_PER_GRID * NUM_BBOX_ATTRS + (air * NUM_CLASSES)
+                final_label[i, st: st + NUM_CLASSES, grid_x, grid_y] = \
+                    one_hot_mapping[int(bbox[-1])]
         return nd.array(final_label)
 
     def step(self, steps):

@@ -25,8 +25,11 @@ def main():
     data_root = arguments['--data']
     batch_size = int(arguments['--batch_size'])
 
-    train_iter = Reader(os.path.join(data_root, 'train.brick'))
-    val_iter = Reader(os.path.join(data_root, 'trainval.brick'))
+    train_path = os.path.join(data_root, 'train.brick')
+    train_iter = Reader(train_path, batch_size=batch_size)
+
+    val_path = os.path.join(data_root, 'val.brick')
+    val_iter = Reader(val_path, batch_size=batch_size)
     pre_iter = mx.io.PrefetchingIter([train_iter])
 
     model = SqueezeDet()

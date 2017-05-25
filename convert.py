@@ -22,17 +22,17 @@ def main():
     out_root = arguments['--out']
 
     X_train, Y_train = grab_images_labels(data_root, 'train')
-    X_val, Y_val = grab_images_labels(data_root, 'trainval')
+    X_val, Y_val = grab_images_labels(data_root, 'val')
 
     train_writer = Writer(os.path.join(out_root, 'train.brick'))
     train_writer.write(X_train, Y_train)
     train_writer.close()
     print(' * Finished writing train.')
 
-    val_writer = Writer(os.path.join(out_root, 'trainval.brick'))
+    val_writer = Writer(os.path.join(out_root, 'val.brick'))
     val_writer.write(X_val, Y_val)
     val_writer.close()
-    print(' * Finished writing trainval.')
+    print(' * Finished writing val.')
 
 
 if __name__ == '__main__':
