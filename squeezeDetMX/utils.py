@@ -89,44 +89,43 @@ def jpeg_bytes_to_image(bytedata: bytes) -> np.array:
     return mx.image.imdecode(bytedata, to_rgb=False).asnumpy().astype(np.float32)
 
 
-def mean_squared_loss(out: nd.array, label: nd.array, n_axes: int=4) -> float:
-    return mx.sym.sum(mx.sym.square(out - label), axis=tuple(range(n_axes)))
-
-
-def iou(box1: nd.array, box2: nd.array) -> nd.array:
-    """Compute Intersection-Over-Union of a symbol and a box.
-
-    From original repository, written by Bichen Wu
+def batch_iou(boxes: np.array, box: np.array) -> np.array:
     """
-    lr = nd.maximum(
-        nd.minimum(box1[0] + 0.5 * box1[2], box2[0] + 0.5 * box2[2]) -
-        nd.maximum(box1[0] - 0.5 * box1[2], box2[0] - 0.5 * box2[2]),
-        0
-    )
-    tb = nd.maximum(
-        nd.minimum(box1[1] + 0.5 * box1[3], box2[1] + 0.5 * box2[3]) -
-        nd.maximum(box1[1] - 0.5 * box1[3], box2[1] - 0.5 * box2[3]),
-        0
-    )
-    inter = lr * tb
-    union = box1[2] * box1[2] + box2[2] * box2[3] - inter
-    return inter / union
-
-
-def batch_iou(boxes: nd.array, box: nd.array) -> nd.array:
-    """
-    Compute the Intersection-Over-Union of a batch of boxes with another
-    box.
-
     Args:
-        boxes: 2D array of [cx, cy, width, height].
-        box: a single array of [cx, cy, width, height]
+        b1: 2D array of [cx, cy, width, height].
+        b2: a single array of [cx, cy, width, height]
     Returns:
         ious: array of a float number in range [0, 1].
     """
-    n = boxes.shape[0]
-    repacked_boxes = [nd.slice(boxes, (0, i), (n, i+1)) for i in range(4)]
-    return iou(repacked_boxes, box)
+    return batches_iou(boxes, box.reshape((1, -1)))
+
+
+def batches_iou(b1: np.array, b2: np.array) -> np.array:
+    """
+    Compute the Intersection-Over-Union of a batch of boxes with another
+    batch of boxes.
+
+    From original repository, written by Bichen Wu
+
+    Args:
+        b1: 2D array of [cx, cy, width, height].
+        b2: 2D array of [cx, cy, width, height]
+    Returns:
+        ious: array of a float number in range [0, 1].
+    """
+    lr = np.maximum(
+        np.minimum(b1[:, 0] + 0.5 * b1[:, 2], b2[:, 0] + 0.5 * b2[:, 2]) - \
+        np.maximum(b1[:, 0] - 0.5 * b1[:, 2], b2[:, 0] - 0.5 * b2[:, 2]),
+        0
+    )
+    tb = np.maximum(
+        np.minimum(b1[:, 1] + 0.5 * b1[:, 3], b2[:, 1] + 0.5 * b2[:, 3]) - \
+        np.maximum(b1[:, 1] - 0.5 * b1[:, 3], b2[:, 1] - 0.5 * b2[:, 3]),
+        0
+    )
+    inter = lr*tb
+    union = b1[:, 2] * b1[:, 3] + b2[:, 2] * b2[:, 3] - inter
+    return inter/union
 
 
 def size_in_bytes(bytedata: bytes, slot_size: int) -> bytes:
@@ -137,12 +136,11 @@ def size_in_bytes(bytedata: bytes, slot_size: int) -> bytes:
 def create_anchors(
         num_x: int=GRID_WIDTH,
         num_y: int=GRID_HEIGHT,
-        whs: List[List[int]]=RANDOM_WIDTHS_HEIGHTS) -> nd.array:
+        whs: List[List[int]]=RANDOM_WIDTHS_HEIGHTS) -> np.array:
     """Generates a list of [x, y, w, h], where centers are spread uniformly."""
     xs = np.linspace(0, IMAGE_WIDTH, num_x+2)[1:-1]  # exclude 0, IMAGE_WIDTH
     ys = np.linspace(0, IMAGE_HEIGHT, num_y+2)[1:-1]  # exclude 0, IMAGE_HEIGHT
-    return nd.array(np.vstack(
-        [(x, y, w, h) for x in xs for y in ys for w, h in whs]))
+    return np.vstack([(x, y, w, h) for x in xs for y in ys for w, h in whs])
 
 
 def setup_logger(path: str='./logs/model.log'):
@@ -207,6 +205,7 @@ class Reader(io.DataIter):
             label_fmt: str='ffffi',
             img_shape: Tuple=(3, IMAGE_HEIGHT, IMAGE_WIDTH),
             batch_size: int=20):
+        super(Reader, self).__init__()
         self.filename = filename
         self.label_fmt = label_fmt
         self.batch_size = batch_size
@@ -304,21 +303,21 @@ class Reader(io.DataIter):
         for i, bboxes in enumerate(labels):
             for bbox in bboxes:
                 # 1. Compute distance
-                dists = batch_iou(Reader.anchors, nd.array(bbox))
-                if nd.max(dists).asscalar() == 0:
+                dists = batch_iou(Reader.anchors, bbox)
+                if np.max(dists) == 0:
                     dists = [np.linalg.norm(bbox[:4] - anchor)
                              for anchor in Reader.anchors]
 
                 # 2. Assign to anchor
-                anchor_index = int(nd.argmax(dists, axis=0).asscalar())
+                anchor_index = int(np.argmax(dists))
                 if anchor_index in taken_anchor_indices:
                     continue
                 taken_anchor_indices.add(anchor_index)
 
                 # 3. Place in grid
                 anchor_x, anchor_y = Reader.anchors[anchor_index][:2]
-                grid_x = int(anchor_x.asscalar() // GRID_WIDTH)
-                grid_y = int(anchor_y.asscalar() // GRID_HEIGHT)
+                grid_x = int(anchor_x // GRID_WIDTH)
+                grid_y = int(anchor_y // GRID_HEIGHT)
                 air = anchor_index % ANCHORS_PER_GRID
 
                 st = air * NUM_BBOX_ATTRS
