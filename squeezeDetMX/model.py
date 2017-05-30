@@ -8,7 +8,6 @@ from .constants import NUM_OUT_CHANNELS
 from .constants import ANCHORS_PER_GRID
 from .constants import NUM_CLASSES
 from .constants import NUM_BBOX_ATTRS
-from .utils import Reader
 from .utils import batches_iou
 from typing import List
 
@@ -18,7 +17,9 @@ class SqueezeDet:
 
     def __init__(self):
         self.data = sym.Variable('image')
-        self.label = sym.Variable('label')
+        self.label_box = sym.Variable('label_box')
+        self.label_class = sym.Variable('label_class')
+        self.label_score = sym.Variable('label_score')
         self.net = self.add_forward(self.data)
         self.error = self.add_loss(self.net)
 
@@ -61,30 +62,28 @@ class SqueezeDet:
         """
         num_splits = int(NUM_OUT_CHANNELS / ANCHORS_PER_GRID)
         net_splits = list(sym.split(net, num_outputs=num_splits))
-        lbl_splits = list(sym.split(self.label, num_outputs=num_splits))
 
         # Compute loss for bounding box
-        splice_bbox = lambda x: sym.concat(*x[:NUM_BBOX_ATTRS])
-        pred_box, label_box = splice_bbox(net_splits), splice_bbox(lbl_splits)
-        loss_box = sym.LinearRegressionOutput(data=pred_box, label=label_box)
+        pred_box = sym.concat(*net_splits[:NUM_BBOX_ATTRS])
+        loss_box = sym.LinearRegressionOutput(data=pred_box, label=self.label_box)
 
         # Compute loss for class probabilities TODO(Alvin): fix second concat
         cidx = NUM_BBOX_ATTRS + NUM_CLASSES
-        # splice_class = lambda x: sym.concat(*sym.split(sym.concat(
-        #     *x[NUM_BBOX_ATTRS:cidx], dim=1), num_outputs=ANCHORS_PER_GRID), dim=0)
-        # pred_class_probs = sym.softmax(splice_class(net_splits), axis=1)
-        # label_class_probs = splice_class(lbl_splits)
-        # loss_class = sym.LogisticRegressionOutput(
-        #     data=pred_class_probs, label=label_class_probs)
+        pred_class = sym.softmax(sym.concat(*sym.split(sym.concat(
+            *net_splits[NUM_BBOX_ATTRS:cidx], dim=1),
+            num_outputs=ANCHORS_PER_GRID), dim=0), axis=1)
+        loss_class = sym.SoftmaxOutput(data=pred_class, label=self.label_class)
 
-        # Compute loss for confidence scores
+        # Compute loss for confidence scores - Due to quirk in MXNet, we create
+        # a placeholder label_score. However, we actually use the pred_box and
+        # label_box to compute IOU, which is then compared with pred_score.
         pred_score = net_splits[cidx]
         loss_iou = mx.symbol.Custom(
             data=pred_score,
-            label=sym.concat(pred_box, label_box, dim=0),
+            label=sym.concat(self.label_score, pred_box, self.label_box, dim=1),
             op_type='IOURegressionOutput')
 
-        return loss_iou
+        return mx.sym.Group([loss_box, loss_iou])
 
     def _fire_layer(
             self,
@@ -123,18 +122,21 @@ class IOURegressionOutput(mx.operator.CustomOp):
         self.ctx = ctx
 
     def forward(self, is_train: bool, req, in_data: List, out_data: List, aux):
-        self.assign(out_data[0], req[0], in_data[0])
+        self.assign(out_data[0], req[0], in_data[1])
 
     def backward(self, req, out_grad, in_data, out_data, in_grad, aux):
         # Reformat array without reshape, to maintain structure
         reformat = lambda x: self.reformat(x).asnumpy()
 
-        data = in_data[1]
-        pred = np.ravel(reformat(in_data[0]))
+        pred_idx = ANCHORS_PER_GRID * (1 + NUM_BBOX_ATTRS)
+        pred_box = reformat(nd.slice_axis(
+            in_data[1], axis=1, begin=ANCHORS_PER_GRID, end=pred_idx))
+        label_box = reformat(nd.slice_axis(
+            in_data[1], axis=1, begin=pred_idx, end=None))
+        pred_ious = np.ravel(reformat(in_data[0]))
 
-        pred_box, label_box = nd.split(data, num_outputs=2, axis=0)
-        ious = batches_iou(reformat(pred_box), reformat(label_box))
-        gradient = -2 * (ious - pred)
+        ious = batches_iou(pred_box, label_box)
+        gradient = -2 * (ious - pred_ious)
 
         self.assign(in_grad[0], req[0], gradient.reshape(in_data[0].shape))
 
@@ -157,10 +159,9 @@ class IOURegressionOutputProp(mx.operator.CustomOpProp):
 
     def infer_shape(self, in_shape):
         pred_shape = in_shape[0]
-        data_shape = in_shape[0][:]
-        data_shape[1] *= NUM_BBOX_ATTRS
-        data_shape[0] *= 2
-        return [pred_shape, data_shape], [pred_shape], []
+        label_shape = in_shape[0][:]
+        label_shape[1] = ANCHORS_PER_GRID * (NUM_BBOX_ATTRS * 2 + 1)
+        return [pred_shape, label_shape], [label_shape], []
 
     def create_operator(self, ctx, shapes, dtypes):
         return IOURegressionOutput(ctx)

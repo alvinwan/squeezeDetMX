@@ -211,8 +211,11 @@ class Reader(io.DataIter):
         self.batch_size = batch_size
         self.img_shape = img_shape
         self.provide_data = [('image', (batch_size, *img_shape))]
-        self.provide_label = [('label', (
-            batch_size, NUM_OUT_CHANNELS, GRID_HEIGHT, GRID_WIDTH))]
+        self.provide_label = [
+            ('label_box', (
+                batch_size, ANCHORS_PER_GRID * NUM_BBOX_ATTRS, GRID_HEIGHT, GRID_WIDTH)),
+            ('label_score', (
+                batch_size, ANCHORS_PER_GRID, GRID_HEIGHT, GRID_WIDTH))]
 
         if filename is not None:
             self.record = mx.recordio.MXRecordIO(filename, 'r')
@@ -245,8 +248,12 @@ class Reader(io.DataIter):
             batch_labels.append(self.read_label())
             if self.record:
                 self.bytedata = self.record.read()
-        batch_labels = self.batch_label_to_mx(batch_labels)
-        return io.DataBatch([batch_images], [batch_labels], self.batch_size-1-i)
+        batch_label_box, batch_label_class, batch_label_score = \
+            self.batch_label_to_mx(batch_labels)
+        return io.DataBatch(
+            [batch_images],
+            [batch_label_box, batch_label_score],
+            self.batch_size-1-i)
 
     def read_image(self):
         """Read image from the byte buffer."""
@@ -300,6 +307,7 @@ class Reader(io.DataIter):
         final_label = np.zeros((
             len(labels), NUM_OUT_CHANNELS, GRID_HEIGHT, GRID_WIDTH))
         one_hot_mapping = np.eye(NUM_CLASSES)
+        i_box = ANCHORS_PER_GRID * NUM_BBOX_ATTRS
         for i, bboxes in enumerate(labels):
             for bbox in bboxes:
                 # 1. Compute distance
@@ -324,10 +332,14 @@ class Reader(io.DataIter):
                 final_label[i, st: st + NUM_BBOX_ATTRS, grid_x, grid_y] = \
                     bbox[:NUM_BBOX_ATTRS]
 
-                st = ANCHORS_PER_GRID * NUM_BBOX_ATTRS + (air * NUM_CLASSES)
+                st = i_box + (air * NUM_CLASSES)
                 final_label[i, st: st + NUM_CLASSES, grid_x, grid_y] = \
                     one_hot_mapping[int(bbox[-1])]
-        return nd.array(final_label)
+        label_box = nd.array(final_label[:, :i_box])
+        label_class = nd.array(
+            final_label[:, i_box: i_box + (ANCHORS_PER_GRID * NUM_BBOX_ATTRS)])
+        label_score = nd.array(final_label[:, -ANCHORS_PER_GRID:])
+        return label_box, label_class, label_score
 
     def step(self, steps):
         """Step forward by `steps` in the byte buffer."""
