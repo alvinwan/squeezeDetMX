@@ -215,7 +215,9 @@ class Reader(io.DataIter):
             ('label_box', (
                 batch_size, ANCHORS_PER_GRID * NUM_BBOX_ATTRS, GRID_HEIGHT, GRID_WIDTH)),
             ('label_score', (
-                batch_size, ANCHORS_PER_GRID, GRID_HEIGHT, GRID_WIDTH))]
+                batch_size, ANCHORS_PER_GRID, GRID_HEIGHT, GRID_WIDTH)),
+            ('label_class', (
+                batch_size, ANCHORS_PER_GRID * NUM_CLASSES, GRID_HEIGHT, GRID_WIDTH))]
 
         if filename is not None:
             self.record = mx.recordio.MXRecordIO(filename, 'r')
@@ -252,7 +254,7 @@ class Reader(io.DataIter):
             self.batch_label_to_mx(batch_labels)
         return io.DataBatch(
             [batch_images],
-            [batch_label_box, batch_label_score],
+            [batch_label_box, batch_label_score, batch_label_class],
             self.batch_size-1-i)
 
     def read_image(self):
@@ -337,7 +339,7 @@ class Reader(io.DataIter):
                     one_hot_mapping[int(bbox[-1])]
         label_box = nd.array(final_label[:, :i_box])
         label_class = nd.array(
-            final_label[:, i_box: i_box + (ANCHORS_PER_GRID * NUM_BBOX_ATTRS)])
+            final_label[:, i_box: i_box + (ANCHORS_PER_GRID * NUM_CLASSES)])
         label_score = nd.array(final_label[:, -ANCHORS_PER_GRID:])
         return label_box, label_class, label_score
 

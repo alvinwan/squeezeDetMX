@@ -52,13 +52,17 @@ class SqueezeDet:
         Below, we splice the network output accordingly to compute losses for
         the following:
 
-            1. Class probabilities
-            2. IOUS as "confidence scores"
-            3. Bounding box attributes
+            1. Bounding box attributes
+            2. Class probabilities
+            3. IOUS as "confidence scores"
 
         Below, the ugly splice functions are replacements for reshaping.
         Instead, split along a dimension into multiple chunks, and then
         restack the arrays in a consistent way.
+
+        Due to quirk in MXNet, we create a placeholder label_score. However,
+        we actually use pred_box and label_box to compute IOU (true labels),
+        which are then compared with pred_score.
         """
         num_splits = int(NUM_OUT_CHANNELS / ANCHORS_PER_GRID)
         net_splits = list(sym.split(net, num_outputs=num_splits))
@@ -67,23 +71,23 @@ class SqueezeDet:
         pred_box = sym.concat(*net_splits[:NUM_BBOX_ATTRS])
         loss_box = sym.LinearRegressionOutput(data=pred_box, label=self.label_box)
 
-        # Compute loss for class probabilities TODO(Alvin): fix second concat
+        # Compute loss for class probabilities
         cidx = NUM_BBOX_ATTRS + NUM_CLASSES
-        pred_class = sym.softmax(sym.concat(*sym.split(sym.concat(
-            *net_splits[NUM_BBOX_ATTRS:cidx], dim=1),
-            num_outputs=ANCHORS_PER_GRID), dim=0), axis=1)
-        loss_class = sym.SoftmaxOutput(data=pred_class, label=self.label_class)
+        reformat = lambda x: sym.transpose(sym.concat(*sym.split(
+            x, num_outputs=ANCHORS_PER_GRID), dim=0), axes=(1, 0, 2, 3))
+        pred_class = reformat(sym.concat(
+            *net_splits[NUM_BBOX_ATTRS:cidx], dim=1))
+        label_class = reformat(self.label_class)
+        loss_class = sym.SoftmaxOutput(data=pred_class, label=label_class)
 
-        # Compute loss for confidence scores - Due to quirk in MXNet, we create
-        # a placeholder label_score. However, we actually use the pred_box and
-        # label_box to compute IOU, which is then compared with pred_score.
+        # Compute loss for confidence scores.
         pred_score = net_splits[cidx]
         loss_iou = mx.symbol.Custom(
             data=pred_score,
             label=sym.concat(self.label_score, pred_box, self.label_box, dim=1),
             op_type='IOURegressionOutput')
 
-        return mx.sym.Group([loss_box, loss_iou])
+        return mx.sym.Group([loss_box, loss_iou, loss_class])
 
     def _fire_layer(
             self,
@@ -117,6 +121,8 @@ class SqueezeDet:
 
 
 class IOURegressionOutput(mx.operator.CustomOp):
+    """Custom operator for IOU regression."""
+
     def __init__(self, ctx):
         super(IOURegressionOutput, self).__init__()
         self.ctx = ctx
@@ -138,6 +144,7 @@ class IOURegressionOutput(mx.operator.CustomOp):
         ious = batches_iou(pred_box, label_box)
         gradient = -2 * (ious - pred_ious)
 
+        # TODO(Alvin): Is this last reshape consistent?
         self.assign(in_grad[0], req[0], gradient.reshape(in_data[0].shape))
 
     def reformat(self, x: nd.array) -> nd.array:
