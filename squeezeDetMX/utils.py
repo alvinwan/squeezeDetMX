@@ -360,6 +360,7 @@ class Reader(io.DataIter):
     def reset(self):
         if self.record:
             self.record.reset()
+            self.bytedata = self.record.read()
 
     def __exit__(self, exception_type, exception_value, traceback):
         self.close()
