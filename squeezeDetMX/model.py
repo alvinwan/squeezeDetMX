@@ -9,6 +9,7 @@ from .constants import ANCHORS_PER_GRID
 from .constants import NUM_CLASSES
 from .constants import NUM_BBOX_ATTRS
 from .utils import batches_iou
+from mxnet import metric
 from typing import List
 
 
@@ -46,7 +47,7 @@ class SqueezeDet:
             dropout11, name='conv12', num_filter=NUM_OUT_CHANNELS,
             kernel=(3, 3), stride=(1, 1), pad=(1, 1))
 
-    def add_loss(self, net: sym.Variable):
+    def add_loss(self, splits: sym.Variable):
         """Add loss functions.
 
         Below, we splice the network output accordingly to compute losses for
@@ -65,29 +66,26 @@ class SqueezeDet:
         which are then compared with pred_score.
         """
         num_splits = int(NUM_OUT_CHANNELS / ANCHORS_PER_GRID)
-        net_splits = list(sym.split(net, num_outputs=num_splits))
+        splits = list(sym.split(splits, num_outputs=num_splits))
 
         # Compute loss for bounding box
-        pred_box = sym.concat(*net_splits[:NUM_BBOX_ATTRS])
+        pred_box = sym.concat(*splits[:NUM_BBOX_ATTRS])
         loss_box = sym.LinearRegressionOutput(data=pred_box, label=self.label_box)
 
         # Compute loss for class probabilities
         cidx = NUM_BBOX_ATTRS + NUM_CLASSES
-        reformat = lambda x: sym.transpose(sym.concat(*sym.split(
-            x, num_outputs=ANCHORS_PER_GRID), dim=0), axes=(1, 0, 2, 3))
-        pred_class = reformat(sym.concat(
-            *net_splits[NUM_BBOX_ATTRS:cidx], dim=1))
-        label_class = reformat(self.label_class)
+        pred_class = reformat(sym.concat(*splits[NUM_BBOX_ATTRS:cidx]), pkg=sym)
+        label_class = reformat(self.label_class, pkg=sym)
         loss_class = sym.SoftmaxOutput(data=pred_class, label=label_class)
 
         # Compute loss for confidence scores.
-        pred_score = net_splits[cidx]
+        pred_score = splits[cidx]
         loss_iou = mx.symbol.Custom(
             data=pred_score,
-            label=sym.concat(self.label_score, pred_box, self.label_box, dim=1),
-            op_type='IOURegressionOutput')
+            label=sym.concat(self.label_score, pred_box, self.label_box),
+            op_type='IOUOutput')
 
-        return mx.sym.Group([loss_box, loss_iou, loss_class])
+        return mx.sym.Group([loss_box, loss_class, loss_iou])
 
     def _fire_layer(
             self,
@@ -120,18 +118,35 @@ class SqueezeDet:
         return sym.Concat(relu2, relu3, dim=1, name=name+'/concat')
 
 
-class IOURegressionOutput(mx.operator.CustomOp):
+################
+# MXNET LAYERS #
+################
+
+
+def reformat(x: nd.array, pkg=nd) -> nd.array:
+    """Reformat array to be (d, ?, ?, ?).
+
+    We re-arrange dimensions, keeping sample attributes together as needed.
+    """
+    return pkg.transpose(
+        pkg.concat(*pkg.split(x, num_outputs=ANCHORS_PER_GRID), dim=0),
+        axes=(1, 0, 2, 3))
+
+
+class IOUOutput(mx.operator.CustomOp):
     """Custom operator for IOU regression."""
 
     def __init__(self, ctx):
-        super(IOURegressionOutput, self).__init__()
+        super(IOUOutput, self).__init__()
         self.ctx = ctx
 
     def forward(self, is_train: bool, req, in_data: List, out_data: List, aux):
+        """Reformat predictions in anticipation of softmax."""
         pred_ious = np.ravel(self.reformat(in_data[0]))
         self.assign(out_data[0], req[0], pred_ious)
 
     def backward(self, req, out_grad, in_data, out_data, in_grad, aux):
+        """Evaluate gradient for mean-squared error."""
         pred_ious = out_data[0].asnumpy()
         ious = self.ious(in_data[1])
         gradient = -2 * (ious - pred_ious)
@@ -140,14 +155,28 @@ class IOURegressionOutput(mx.operator.CustomOp):
         self.assign(in_grad[0], req[0], gradient.reshape(in_data[0].shape))
 
     @staticmethod
-    def reformat(x: nd.array) -> nd.array:
-        """Reformat array to be (-1, 4)"""
-        return nd.flatten(nd.transpose(nd.concat(*nd.split(
-            x, num_outputs=9, axis=1), dim=0), axes=(1, 0, 2, 3))).T.asnumpy()
+    def reformat(x: nd.array) -> np.array:
+        """Reformat array to be (4, ?, ?, ?).
+
+        Softmax is run across (4, -1) before the array is reshaped to the
+        original dimensions. So, we re-arrange dimensions, keeping bounding
+        box attributes together where needed.
+        """
+        return nd.flatten(reformat(x)).T.asnumpy()
 
     @classmethod
     def ious(cls, label: np.array) -> np.array:
-        """Convert the label provided to this layer to ious."""
+        """Convert the label provided to this layer to ious.
+
+        The labels for this layer are structured a bit strangely:
+
+            b x 9 x 22 x 72: placeholder for labels (hacky mxnet workaround)
+            b x 36 x 22 x 72: predicted bounding boxes
+            b x 36 x 22 x 72: actual bounding boxes
+
+        Thus, we ignore the first set of values, and compute iou using the
+        last two.
+        """
         pred_idx = ANCHORS_PER_GRID * (1 + NUM_BBOX_ATTRS)
         pred_box = cls.reformat(nd.slice_axis(
             label, axis=1, begin=ANCHORS_PER_GRID, end=pred_idx))
@@ -156,10 +185,12 @@ class IOURegressionOutput(mx.operator.CustomOp):
         return batches_iou(pred_box, label_box)
 
 
-@mx.operator.register("IOURegressionOutput")
-class IOURegressionOutputProp(mx.operator.CustomOpProp):
+@mx.operator.register("IOUOutput")
+class IOUOutputProp(mx.operator.CustomOpProp):
+    """Supporting utilities for IOU regression."""
+
     def __init__(self):
-        super(IOURegressionOutputProp, self).__init__(need_top_grad=False)
+        super(IOUOutputProp, self).__init__(need_top_grad=False)
 
     def list_arguments(self):
         return ['data', 'label']
@@ -174,4 +205,48 @@ class IOURegressionOutputProp(mx.operator.CustomOpProp):
         return [pred_shape, label_shape], [(np.prod(pred_shape),)], []
 
     def create_operator(self, ctx, shapes, dtypes):
-        return IOURegressionOutput(ctx)
+        return IOUOutput(ctx)
+
+
+################
+# MXNET LOSSES #
+################
+
+
+class BboxError(metric.EvalMetric):
+    """Mean-squared error for bounding box loss."""
+
+    def __init__(self):
+        super(BboxError, self).__init__('Bbox')
+
+    def update(self, labels: nd.array, preds: nd.array) -> float:
+        metric.check_label_shapes(labels, preds)
+
+        label, pred = labels[0].asnumpy(), preds[0].asnumpy()
+        return np.sum((pred - label) ** 2)
+
+
+class ClassError(metric.EvalMetric):
+    """Cross-entropy loss for class probabilities."""
+
+    def __init__(self):
+        super(ClassError, self).__init__('Class')
+
+    def update(self, labels: nd.array, preds: nd.array) -> float:
+        metric.check_label_shapes(labels, preds)
+
+        label, pred = labels[1].asnumpy(), reformat(preds[1]).asnumpy()
+        return 0.0
+
+
+class IOUError(metric.EvalMetric):
+    """Mean-squared error between confidence scores and actual IOUs."""
+
+    def __init__(self):
+        super(IOUError, self).__init__('IOU')
+
+    def update(self, labels: nd.array, preds: nd.array) -> float:
+        metric.check_label_shapes(labels, preds)
+
+        label, pred = labels[2].asnumpy(), preds[2].asnumpy()
+        return 0.0
