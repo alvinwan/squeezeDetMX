@@ -61,7 +61,7 @@ class SqueezeDet:
         Instead, split along a dimension into multiple chunks, and then
         restack the arrays in a consistent way.
 
-        Due to quirk in MXNet, we create a placeholder label_score. However,
+        Due to a quirk in MXNet, we create a placeholder label_score. However,
         we actually use pred_box and label_box to compute IOU (true labels),
         which are then compared with pred_score.
         """
@@ -78,7 +78,7 @@ class SqueezeDet:
         label_class = reformat(self.label_class, pkg=sym)
         loss_class = sym.SoftmaxOutput(data=pred_class, label=label_class)
 
-        # Compute loss for confidence scores.
+        # Compute loss for confidence scores - see doc above for explanation
         pred_score = splits[cidx]
         loss_iou = mx.symbol.Custom(
             data=pred_score,
@@ -223,7 +223,7 @@ class BboxError(metric.EvalMetric):
         metric.check_label_shapes(labels, preds)
 
         label, pred = labels[0].asnumpy(), preds[0].asnumpy()
-        return np.sum((pred - label) ** 2)
+        return ((pred - label) ** 2).sum()
 
 
 class ClassError(metric.EvalMetric):
@@ -235,8 +235,10 @@ class ClassError(metric.EvalMetric):
     def update(self, labels: nd.array, preds: nd.array) -> float:
         metric.check_label_shapes(labels, preds)
 
-        label, pred = labels[1].asnumpy(), reformat(preds[1]).asnumpy()
-        return 0.0
+        label = nd.array(
+            reformat(labels[1]).asnumpy().ravel().round().astype(np.int))
+        pred = nd.flatten(preds[1]).T.as_in_context(label.context)
+        return nd.softmax_cross_entropy(pred, label).asscalar()
 
 
 class IOUError(metric.EvalMetric):
@@ -248,5 +250,8 @@ class IOUError(metric.EvalMetric):
     def update(self, labels: nd.array, preds: nd.array) -> float:
         metric.check_label_shapes(labels, preds)
 
-        label, pred = labels[2].asnumpy(), preds[2].asnumpy()
-        return 0.0
+        pred = preds[2].asnumpy()
+        pred_box = IOUOutput.reformat(preds[0])
+        label_box = IOUOutput.reformat(labels[0])
+        ious = batches_iou(pred_box, label_box)
+        return ((pred - ious) ** 2).sum()
