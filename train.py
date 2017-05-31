@@ -14,6 +14,9 @@ import os.path
 import time
 
 from squeezeDetMX.model import SqueezeDet
+from squeezeDetMX.model import BboxError
+from squeezeDetMX.model import ClassError
+from squeezeDetMX.model import IOUError
 from squeezeDetMX.utils import Reader
 from squeezeDetMX.utils import build_module
 from squeezeDetMX.utils import setup_logger
@@ -25,12 +28,16 @@ def main():
     data_root = arguments['--data']
     batch_size = int(arguments['--batch_size'])
 
-    train_iter = Reader(os.path.join(data_root, 'train.brick'))
-    val_iter = Reader(os.path.join(data_root, 'trainval.brick'))
+    train_path = os.path.join(data_root, 'train.brick')
+    train_iter = Reader(train_path, batch_size=batch_size)
+
+    val_path = os.path.join(data_root, 'val.brick')
+    val_iter = Reader(val_path, batch_size=batch_size)
     pre_iter = mx.io.PrefetchingIter([train_iter])
 
     model = SqueezeDet()
-    module = build_module(model.error, 'squeezeDetMX', train_iter)
+    module = build_module(model.error, 'squeezeDetMX', train_iter,
+                          ctx=[mx.gpu(0), mx.gpu(1), mx.gpu(2), mx.gpu(3)])
 
     try:
         module.fit(
@@ -38,7 +45,8 @@ def main():
             eval_data=val_iter,
             num_epoch=50,
             batch_end_callback=mx.callback.Speedometer(batch_size, 10),
-            eval_metric='acc',
+            eval_metric=mx.metric.CompositeEvalMetric(
+                metrics=[BboxError(), ClassError(), IOUError()]),
             epoch_end_callback=mx.callback.do_checkpoint('squeezeDetMX', 1))
     except KeyboardInterrupt:
         module.save_params('squeezeDet-{}-9999.params'.format(
