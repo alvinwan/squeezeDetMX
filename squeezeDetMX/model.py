@@ -128,29 +128,32 @@ class IOURegressionOutput(mx.operator.CustomOp):
         self.ctx = ctx
 
     def forward(self, is_train: bool, req, in_data: List, out_data: List, aux):
-        self.assign(out_data[0], req[0], in_data[1])
+        pred_ious = np.ravel(self.reformat(in_data[0]))
+        self.assign(out_data[0], req[0], pred_ious)
 
     def backward(self, req, out_grad, in_data, out_data, in_grad, aux):
-        # Reformat array without reshape, to maintain structure
-        reformat = lambda x: self.reformat(x).asnumpy()
-
-        pred_idx = ANCHORS_PER_GRID * (1 + NUM_BBOX_ATTRS)
-        pred_box = reformat(nd.slice_axis(
-            in_data[1], axis=1, begin=ANCHORS_PER_GRID, end=pred_idx))
-        label_box = reformat(nd.slice_axis(
-            in_data[1], axis=1, begin=pred_idx, end=None))
-        pred_ious = np.ravel(reformat(in_data[0]))
-
-        ious = batches_iou(pred_box, label_box)
+        pred_ious = out_data[0].asnumpy()
+        ious = self.ious(in_data[1])
         gradient = -2 * (ious - pred_ious)
 
         # TODO(Alvin): Is this last reshape consistent?
         self.assign(in_grad[0], req[0], gradient.reshape(in_data[0].shape))
 
-    def reformat(self, x: nd.array) -> nd.array:
+    @staticmethod
+    def reformat(x: nd.array) -> nd.array:
         """Reformat array to be (-1, 4)"""
         return nd.flatten(nd.transpose(nd.concat(*nd.split(
-            x, num_outputs=9, axis=1), dim=0), axes=(1, 0, 2, 3))).T
+            x, num_outputs=9, axis=1), dim=0), axes=(1, 0, 2, 3))).T.asnumpy()
+
+    @classmethod
+    def ious(cls, label: np.array) -> np.array:
+        """Convert the label provided to this layer to ious."""
+        pred_idx = ANCHORS_PER_GRID * (1 + NUM_BBOX_ATTRS)
+        pred_box = cls.reformat(nd.slice_axis(
+            label, axis=1, begin=ANCHORS_PER_GRID, end=pred_idx))
+        label_box = cls.reformat(nd.slice_axis(
+            label, axis=1, begin=pred_idx, end=None))
+        return batches_iou(pred_box, label_box)
 
 
 @mx.operator.register("IOURegressionOutput")
@@ -168,7 +171,7 @@ class IOURegressionOutputProp(mx.operator.CustomOpProp):
         pred_shape = in_shape[0]
         label_shape = in_shape[0][:]
         label_shape[1] = ANCHORS_PER_GRID * (NUM_BBOX_ATTRS * 2 + 1)
-        return [pred_shape, label_shape], [label_shape], []
+        return [pred_shape, label_shape], [(np.prod(pred_shape),)], []
 
     def create_operator(self, ctx, shapes, dtypes):
         return IOURegressionOutput(ctx)
