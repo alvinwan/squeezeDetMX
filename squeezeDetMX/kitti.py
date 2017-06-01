@@ -5,12 +5,14 @@ import cv2
 from typing import Tuple
 from typing import List
 import os
+import numpy as np
 
 from .constants import CLASS_TO_INDEX
 from .utils import bbox_transform_inv
 
 
-def grab_images_labels(data_root: str, dataset: str) -> Tuple[List, List]:
+def grab_images_labels(
+        data_root: str, dataset: str, shuffle: bool=True) -> Tuple[List, List]:
     """Grab all images and labels from the specified dataset."""
     assert dataset in ('train', 'trainval', 'val')
     with open(os.path.join(data_root, 'ImageSets/%s.txt' % dataset)) as f:
@@ -25,6 +27,10 @@ def grab_images_labels(data_root: str, dataset: str) -> Tuple[List, List]:
         label_path = os.path.join(data_root, 'training/label_2/%s.txt' % _id)
         with open(label_path) as f:
             image_labels.append(read_bboxes(f.read().splitlines()))
+    if shuffle:
+        groups = [group for group in zip(image_data, image_labels)]
+        np.random.shuffle(groups)
+        return zip(*groups)
     return image_data, image_labels
 
 
