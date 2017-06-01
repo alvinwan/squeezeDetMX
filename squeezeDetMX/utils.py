@@ -15,7 +15,6 @@ import os
 import os.path
 
 from .constants import ANCHORS_PER_GRID
-from .constants import NUM_OUT_CHANNELS
 from .constants import NUM_BBOX_ATTRS
 from .constants import NUM_CLASSES
 from .constants import GRID_WIDTH
@@ -30,9 +29,9 @@ from .constants import BBOX_FORMAT
 
 def build_module(symbol, name, data_iter,
         inputs_need_grad=False,
-        learning_rate=0.01,
+        learning_rate=1e-30,
         momentum=0.9,
-        wd=0.0005,
+        wd=0.0001,
         lr_scheduler=None,
         checkpoint=None,
         ctx=(mx.gpu(0), mx.gpu(1), mx.gpu(2), mx.gpu(3))):
@@ -58,7 +57,7 @@ def build_module(symbol, name, data_iter,
             learning_rate=learning_rate,
             momentum=momentum,
             wd=wd,
-            lr_scheduler=mx.lr_scheduler.FactorScheduler(60000, 0.20)
+            lr_scheduler=mx.lr_scheduler.FactorScheduler(10000, 0.5)
             if lr_scheduler is None else lr_scheduler,
         )
     )
@@ -87,6 +86,16 @@ def image_to_jpeg_bytes(image: np.ndarray) -> bytes:
 
 def jpeg_bytes_to_image(bytedata: bytes) -> np.array:
     return mx.image.imdecode(bytedata, to_rgb=False).asnumpy().astype(np.float32)
+
+
+def mask_using_nonzeros(data: np.array, as_mask: np.array) -> np.array:
+    """Mask the data.
+
+    For each non-zero value in as_mask, keep the corresponding value in data.
+    For each zero in as_mask, zero out the corresponding value in data.
+    """
+    assert data.shape == as_mask.shape
+    return (as_mask != 0).astype(np.uint8) * data
 
 
 def batch_iou(boxes: np.array, box: np.array) -> np.array:
@@ -124,8 +133,9 @@ def batches_iou(b1: np.array, b2: np.array) -> np.array:
         0
     )
     inter = lr*tb
-    union = b1[:, 2] * b1[:, 3] + b2[:, 2] * b2[:, 3] - inter
-    return inter/union
+    union = b1[:, 2] * b1[:, 3] + b2[:, 2] * b2[:, 3] - inter + 1e-10
+    assert 0 not in union
+    return np.nan_to_num(inter/union)
 
 
 def size_in_bytes(bytedata: bytes, slot_size: int) -> bytes:
@@ -268,7 +278,7 @@ class Reader(io.DataIter):
         return nd.transpose(
             imresize(  # TODO(Alvin): imresize should not be needed!
                 nd.array(image), IMAGE_WIDTH, IMAGE_HEIGHT, interp=2),
-                axes=(2, 0, 1))
+                axes=(2, 0, 1)) / 128. - 1.
 
     def read_label(self):
         """Read label from the byte buffer."""
@@ -305,11 +315,14 @@ class Reader(io.DataIter):
             - next ANCHORS_PER_GRID * ONE with nothing
             - last ANCHORS_PER_GRID * NUM_CLASSES with one hot class labels
         """
-        taken_anchor_indices = set()
-        final_label = np.zeros((
-            len(labels), NUM_OUT_CHANNELS, GRID_HEIGHT, GRID_WIDTH))
+        taken_anchor_indices, num_labels = set(), len(labels)
+        label_box = np.zeros((
+            num_labels, ANCHORS_PER_GRID * NUM_BBOX_ATTRS, GRID_HEIGHT, GRID_WIDTH))
+        label_class = np.zeros((
+            num_labels, ANCHORS_PER_GRID * NUM_CLASSES, GRID_HEIGHT, GRID_WIDTH))
+        label_placeholder = np.zeros((
+            num_labels, ANCHORS_PER_GRID, GRID_HEIGHT, GRID_WIDTH))
         one_hot_mapping = np.eye(NUM_CLASSES)
-        i_box = ANCHORS_PER_GRID * NUM_BBOX_ATTRS
         for i, bboxes in enumerate(labels):
             for bbox in bboxes:
                 # 1. Compute distance
@@ -331,17 +344,13 @@ class Reader(io.DataIter):
                 air = anchor_index % ANCHORS_PER_GRID
 
                 st = air * NUM_BBOX_ATTRS
-                final_label[i, st: st + NUM_BBOX_ATTRS, grid_x, grid_y] = \
+                label_box[i, st: st + NUM_BBOX_ATTRS, grid_x, grid_y] = \
                     bbox[:NUM_BBOX_ATTRS]
 
-                st = i_box + (air * NUM_CLASSES)
-                final_label[i, st: st + NUM_CLASSES, grid_x, grid_y] = \
+                st = air * NUM_CLASSES
+                label_class[i, st: st + NUM_CLASSES, grid_x, grid_y] = \
                     one_hot_mapping[int(bbox[-1])]
-        label_box = nd.array(final_label[:, :i_box])
-        label_class = nd.array(
-            final_label[:, i_box: i_box + (ANCHORS_PER_GRID * NUM_CLASSES)])
-        label_score = nd.array(final_label[:, -ANCHORS_PER_GRID:])
-        return label_box, label_class, label_score
+        return map(nd.array, (label_box, label_class, label_placeholder))
 
     def step(self, steps):
         """Step forward by `steps` in the byte buffer."""

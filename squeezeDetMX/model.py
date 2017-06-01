@@ -8,7 +8,9 @@ from .constants import NUM_OUT_CHANNELS
 from .constants import ANCHORS_PER_GRID
 from .constants import NUM_CLASSES
 from .constants import NUM_BBOX_ATTRS
+from .constants import NUM_ANCHORS
 from .utils import batches_iou
+from .utils import mask_using_nonzeros
 from mxnet import metric
 from typing import List
 
@@ -70,7 +72,10 @@ class SqueezeDet:
 
         # Compute loss for bounding box
         pred_box = sym.concat(*splits[:NUM_BBOX_ATTRS])
-        loss_box = sym.LinearRegressionOutput(data=pred_box, label=self.label_box)
+        loss_box = mx.sym.Custom(
+            data=pred_box,
+            label=self.label_box,
+            op_type='LinearRegressionOutputWithMask')
 
         # Compute loss for class probabilities
         cidx = NUM_BBOX_ATTRS + NUM_CLASSES
@@ -83,7 +88,7 @@ class SqueezeDet:
         loss_iou = mx.symbol.Custom(
             data=pred_score,
             label=sym.concat(self.label_score, pred_box, self.label_box),
-            op_type='IOUOutput')
+            op_type='IOURegressionOutputWithMask')
 
         return mx.sym.Group([loss_box, loss_class, loss_iou])
 
@@ -133,11 +138,11 @@ def reformat(x: nd.array, pkg=nd) -> nd.array:
         axes=(1, 0, 2, 3))
 
 
-class IOUOutput(mx.operator.CustomOp):
+class IOURegressionOutputWithMask(mx.operator.CustomOp):
     """Custom operator for IOU regression."""
 
     def __init__(self, ctx):
-        super(IOUOutput, self).__init__()
+        super(IOURegressionOutputWithMask, self).__init__()
         self.ctx = ctx
 
     def forward(self, is_train: bool, req, in_data: List, out_data: List, aux):
@@ -149,7 +154,7 @@ class IOUOutput(mx.operator.CustomOp):
         """Evaluate gradient for mean-squared error."""
         pred_ious = out_data[0].asnumpy()
         ious = self.ious(in_data[1])
-        gradient = -2 * (ious - pred_ious)
+        gradient = 2 * (ious - pred_ious)
 
         # TODO(Alvin): Is this last reshape consistent?
         self.assign(in_grad[0], req[0], gradient.reshape(in_data[0].shape))
@@ -185,12 +190,12 @@ class IOUOutput(mx.operator.CustomOp):
         return batches_iou(pred_box, label_box)
 
 
-@mx.operator.register("IOUOutput")
-class IOUOutputProp(mx.operator.CustomOpProp):
+@mx.operator.register("IOURegressionOutputWithMask")
+class IOURegressionOutputWithMaskProp(mx.operator.CustomOpProp):
     """Supporting utilities for IOU regression."""
 
     def __init__(self):
-        super(IOUOutputProp, self).__init__(need_top_grad=False)
+        super(IOURegressionOutputWithMaskProp, self).__init__(need_top_grad=False)
 
     def list_arguments(self):
         return ['data', 'label']
@@ -205,7 +210,47 @@ class IOUOutputProp(mx.operator.CustomOpProp):
         return [pred_shape, label_shape], [(np.prod(pred_shape),)], []
 
     def create_operator(self, ctx, shapes, dtypes):
-        return IOUOutput(ctx)
+        return IOURegressionOutputWithMask(ctx)
+
+
+class LinearRegressionOutputWithMask(mx.operator.CustomOp):
+
+    def __init__(self, ctx):
+        super(LinearRegressionOutputWithMask, self).__init__()
+        self.ctx = ctx
+
+    def forward(self, is_train: bool, req, in_data: List, out_data: List, aux):
+        """Forward predicted values."""
+        self.assign(out_data[0], req[0], in_data[0])
+
+    def backward(self, req, out_grad, in_data, out_data, in_grad, aux):
+        """Evaluate gradient for mean-squared error."""
+        pred, label = in_data[0].asnumpy(), in_data[1].asnumpy()
+        pred = mask_using_nonzeros(pred, label)
+        gradient = 2 * (pred - label)
+
+        self.assign(in_grad[0], req[0], gradient)
+
+
+@mx.operator.register("LinearRegressionOutputWithMask")
+class LinearRegressionOutputWithMaskProp(mx.operator.CustomOpProp):
+
+    def __init__(self):
+        super(LinearRegressionOutputWithMaskProp, self).__init__(need_top_grad=False)
+
+    def list_arguments(self):
+        return ['data', 'label']
+
+    def list_outputs(self):
+        return ['output']
+
+    def infer_shape(self, in_shape):
+        pred_shape = in_shape[0]
+        label_shape = in_shape[1]
+        return [pred_shape, label_shape], [pred_shape], []
+
+    def create_operator(self, ctx, shapes, dtypes):
+        return LinearRegressionOutputWithMask(ctx)
 
 
 ################
@@ -223,7 +268,10 @@ class BboxError(metric.EvalMetric):
         metric.check_label_shapes(labels, preds)
 
         label, pred = labels[0].asnumpy(), preds[0].asnumpy()
-        return ((pred - label) ** 2).sum()
+        error = ((pred - label) ** 2).sum()
+        self.sum_metric += error
+        self.num_inst += NUM_ANCHORS
+        return error / NUM_ANCHORS
 
 
 class ClassError(metric.EvalMetric):
@@ -238,7 +286,10 @@ class ClassError(metric.EvalMetric):
         label = nd.array(
             reformat(labels[1]).asnumpy().ravel().round().astype(np.int))
         pred = nd.flatten(preds[1]).T.as_in_context(label.context)
-        return nd.softmax_cross_entropy(pred, label).asscalar()
+        error = nd.softmax_cross_entropy(pred, label).asscalar()
+        self.sum_metric += error
+        self.num_inst += NUM_ANCHORS
+        return error / NUM_ANCHORS
 
 
 class IOUError(metric.EvalMetric):
@@ -251,7 +302,10 @@ class IOUError(metric.EvalMetric):
         metric.check_label_shapes(labels, preds)
 
         pred = preds[2].asnumpy()
-        pred_box = IOUOutput.reformat(preds[0])
-        label_box = IOUOutput.reformat(labels[0])
+        pred_box = IOURegressionOutputWithMask.reformat(preds[0])
+        label_box = IOURegressionOutputWithMask.reformat(labels[0])
         ious = batches_iou(pred_box, label_box)
-        return ((pred - ious) ** 2).sum()
+        error = ((pred - ious) ** 2).sum()
+        self.sum_metric += error
+        self.num_inst += NUM_ANCHORS
+        return error / NUM_ANCHORS

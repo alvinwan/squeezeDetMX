@@ -13,6 +13,8 @@ import mxnet as mx
 import os.path
 import time
 
+from mxnet import metric
+
 from squeezeDetMX.model import SqueezeDet
 from squeezeDetMX.model import BboxError
 from squeezeDetMX.model import ClassError
@@ -45,7 +47,7 @@ def main():
             eval_data=val_iter,
             num_epoch=50,
             batch_end_callback=mx.callback.Speedometer(batch_size, 10),
-            eval_metric=mx.metric.CompositeEvalMetric(
+            eval_metric=metric.CompositeEvalMetric(
                 metrics=[BboxError(), ClassError(), IOUError()]),
             epoch_end_callback=mx.callback.do_checkpoint('squeezeDetMX', 1))
     except KeyboardInterrupt:
