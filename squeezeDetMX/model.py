@@ -8,11 +8,13 @@ from .constants import NUM_OUT_CHANNELS
 from .constants import ANCHORS_PER_GRID
 from .constants import NUM_CLASSES
 from .constants import NUM_BBOX_ATTRS
+from .constants import NUM_CHANNELS
 from .utils import nd_batch_iou
-from .utils import mask_using_nonzeros
-from mxnet import metric
+from .utils import mask_with
 from typing import List
 from typing import Tuple
+
+np.seterr('raise')
 
 
 class SqueezeDet:
@@ -42,7 +44,7 @@ class SqueezeDet:
         fire9 = self._fire_layer('fire9', fire8, s1x1=64, e1x1=256, e3x3=256)
         fire10 = self._fire_layer('fire10', fire9, s1x1=96, e1x1=384, e3x3=384)
         fire11 = self._fire_layer('fire11', fire10, s1x1=96, e1x1=384, e3x3=384)
-        dropout11 = sym.Dropout(fire11, p=0.1, name='drop11')
+        dropout11 = sym.Dropout(fire11, p=0.5, name='drop11')
         return sym.Convolution(
             dropout11, name='conv12', num_filter=NUM_OUT_CHANNELS,
             kernel=(3, 3), stride=(1, 1), pad=(1, 1))
@@ -105,12 +107,11 @@ class BigRegressionOutput(mx.operator.CustomOp):
         pred, label = in_data[0], in_data[1].as_in_context(in_data[0].context)
 
         pred_bbox, pred_class, pred_score = self.split_block(pred)
-        label_bbox, label_class, _ = self.split_block(label)
+        label_bbox, label_class, mask = self.split_block(label)
 
-        grad_bbox = self.backward_bbox(pred_bbox, label_bbox)
+        grad_bbox = self.backward_bbox(pred_bbox, label_bbox, mask)
         grad_class = self.backward_class(pred_class, label_class)
         grad_score = self.backward_score(pred_bbox, label_bbox, pred_score)
-
         gradient = self.merge_block((grad_bbox, grad_class, grad_score))
 
         self.assign(in_grad[0], req[0], gradient)
@@ -130,10 +131,10 @@ class BigRegressionOutput(mx.operator.CustomOp):
         splits = nd.split(block, num_outputs=int(block.shape[1] / ANCHORS_PER_GRID))
         expanded_splits = [nd.expand_dims(split, axis=2) for split in splits]
 
-        pred_bbox = nd.concat(*expanded_splits[:NUM_BBOX_ATTRS], dim=2)
-        pred_class = nd.concat(*expanded_splits[NUM_BBOX_ATTRS: NUM_BBOX_ATTRS + NUM_CLASSES], dim=2)
-        pred_score = expanded_splits[-1]
-        return pred_bbox, pred_class, pred_score
+        data_class = nd.concat(*expanded_splits[NUM_BBOX_ATTRS: NUM_BBOX_ATTRS + NUM_CLASSES], dim=2)
+        data_bbox = nd.concat(*expanded_splits[:NUM_BBOX_ATTRS], dim=2)
+        data_score = expanded_splits[-1]
+        return data_bbox, data_class, data_score
 
     @staticmethod
     def merge_block(splits: Tuple[nd.array, nd.array, nd.array]) -> nd.array:
@@ -150,12 +151,14 @@ class BigRegressionOutput(mx.operator.CustomOp):
     def backward_bbox(
             self,
             pred_bbox: nd.array,
-            label_bbox: nd.array) -> nd.array:
+            label_bbox: nd.array,
+            mask: nd.array) -> nd.array:
         """Compute gradient for bbox values.
 
         Mean-squared error between the bounding box values.
         """
-        return 2 * (pred_bbox - label_bbox)
+        masked_pred_bbox = mask_with(pred_bbox, mask)
+        return 2 * (masked_pred_bbox - label_bbox)
 
     def backward_class(
             self,
@@ -165,7 +168,8 @@ class BigRegressionOutput(mx.operator.CustomOp):
 
         Cross entropy error.
         """
-        return pred_class * nd.log(1 - label_class) + pred_class * nd.log(label_class)
+        return nd.zeros(pred_class.shape).as_in_context(pred_class.context)
+        # return pred_class * nd.log(1 - label_class) + pred_class * nd.log(label_class)
 
     def backward_score(
             self,
@@ -176,10 +180,12 @@ class BigRegressionOutput(mx.operator.CustomOp):
 
         Mean-squared error between the true IOUs and predicted confidence.
         """
-        # label_iou = nd_batch_iou(pred_bbox, label_bbox)
-        # return 2 * (pred_score - label_iou)
-        return pred_score
-
+        pred = nd.transpose(pred_bbox, axes=(2, 0, 1, 3, 4))
+        label = nd.transpose(label_bbox, axes=(2, 0, 1, 3, 4))
+        label_iou = nd_batch_iou(pred, label)
+        iou = nd.transpose(label_iou, axes=(1, 2, 0, 3, 4))
+        return nd.zeros(pred_score.shape).as_in_context(pred_bbox.context)
+        # return 2 * (pred_score - iou)
 
 
 @mx.operator.register("BigRegressionOutput")
@@ -207,3 +213,12 @@ class BigRegressionOutputProp(mx.operator.CustomOpProp):
 # MXNET LOSSES #
 ################
 
+
+def bigMetric(label: nd.array, pred: nd.array) -> float:
+    mask = label[:, -ANCHORS_PER_GRID * NUM_CHANNELS:, :, :]
+    pred_bbox = pred[:, :ANCHORS_PER_GRID * NUM_BBOX_ATTRS, :, :]
+    masked_pred_bbox = mask_with(pred_bbox, mask)
+    label_bbox = label[:, :ANCHORS_PER_GRID * NUM_BBOX_ATTRS, :, :]
+    if np.sum(mask) == 0:
+        return 0
+    return np.sum(np.square(masked_pred_bbox - label_bbox)) / np.sum(mask)

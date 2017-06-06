@@ -18,6 +18,7 @@ from .constants import ANCHORS_PER_GRID
 from .constants import NUM_OUT_CHANNELS
 from .constants import NUM_BBOX_ATTRS
 from .constants import NUM_CLASSES
+from .constants import NUM_CHANNELS
 from .constants import GRID_WIDTH
 from .constants import GRID_HEIGHT
 from .constants import IMAGE_WIDTH
@@ -30,7 +31,7 @@ from .constants import BBOX_FORMAT
 
 def build_module(symbol, name, data_iter,
         inputs_need_grad=False,
-        learning_rate=1e-30,
+        learning_rate=1e-7,
         momentum=0.9,
         wd=0.0001,
         lr_scheduler=None,
@@ -89,14 +90,9 @@ def jpeg_bytes_to_image(bytedata: bytes) -> np.array:
     return mx.image.imdecode(bytedata, to_rgb=False).asnumpy().astype(np.float32)
 
 
-def mask_using_nonzeros(data: np.array, as_mask: np.array) -> np.array:
-    """Mask the data.
-
-    For each non-zero value in as_mask, keep the corresponding value in data.
-    For each zero in as_mask, zero out the corresponding value in data.
-    """
-    assert data.shape == as_mask.shape
-    return (as_mask != 0).astype(np.uint8) * data
+def mask_with(data: np.array, mask: np.array) -> np.array:
+    """Mask the data."""
+    return data * mask.broadcast_to(data.shape)
 
 
 def nd_iou(box1: nd.array, box2: nd.array) -> nd.array:
@@ -128,8 +124,7 @@ def nd_batch_iou(boxes: nd.array, box: nd.array) -> nd.array:
     Returns:
         ious: array of a float number in range [0, 1].
     """
-    n = boxes.shape[0]
-    repacked_boxes = [nd.slice(boxes, (0, i), (n, i+1)) for i in range(4)]
+    repacked_boxes = [nd.slice(boxes, (i, 0, 0, 0), (i+1, *boxes.shape[1:])) for i in range(4)]
     return nd_iou(repacked_boxes, box)
 
 
@@ -341,8 +336,8 @@ class Reader(io.DataIter):
         grid. For each grid cell, we fill:
 
             - first ANCHORS_PER_GRID * NUM_BBOX_ATTRS with bounding box attrs
-            - next ANCHORS_PER_GRID * ONE with nothing
-            - last ANCHORS_PER_GRID * NUM_CLASSES with one hot class labels
+            - next ANCHORS_PER_GRID * NUM_CLASSES with one hot class labels
+            - last ANCHORS_PER_GRID * ONE with nothing with MASK
         """
         taken_anchor_indices, num_labels = set(), len(labels)
         label = np.zeros((num_labels, NUM_OUT_CHANNELS, GRID_HEIGHT, GRID_WIDTH))
@@ -361,19 +356,27 @@ class Reader(io.DataIter):
                     continue
                 taken_anchor_indices.add(anchor_index)
 
-                # 3. Place in grid
+                # 3. Compute bounding box attributes.
+                x, y, w, h = bbox[:NUM_BBOX_ATTRS]
+                ax, ay, aw, ah = Reader.anchors[anchor_index]
+                deltas = [(x-ax) / ax, (y-ay) / ay, np.log(w/aw), np.log(h/ah)]
+
+                # 4. Compute grid cell.
                 anchor_x, anchor_y = Reader.anchors[anchor_index][:2]
                 grid_x = int(anchor_x // GRID_WIDTH)
                 grid_y = int(anchor_y // GRID_HEIGHT)
                 air = anchor_index % ANCHORS_PER_GRID
 
+                # 5. Place all in grid.
                 st = air * NUM_BBOX_ATTRS
-                label[i, st: st + NUM_BBOX_ATTRS, grid_x, grid_y] = \
-                    bbox[:NUM_BBOX_ATTRS]
+                label[i, st: st + NUM_BBOX_ATTRS, grid_x, grid_y] = deltas
 
-                st += NUM_BBOX_ATTRS
+                st = ANCHORS_PER_GRID * NUM_BBOX_ATTRS + air * NUM_CLASSES
                 label[i, st: st + NUM_CLASSES, grid_x, grid_y] = \
                     one_hot_mapping[int(bbox[-1])]
+
+                st = ANCHORS_PER_GRID * (NUM_BBOX_ATTRS + NUM_CLASSES) + air
+                label[i, st, grid_x, grid_y] = 1
         return nd.array(label)
 
     def step(self, steps):
