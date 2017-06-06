@@ -8,11 +8,11 @@ from .constants import NUM_OUT_CHANNELS
 from .constants import ANCHORS_PER_GRID
 from .constants import NUM_CLASSES
 from .constants import NUM_BBOX_ATTRS
-from .constants import NUM_ANCHORS
-from .utils import batches_iou
+from .utils import nd_batch_iou
 from .utils import mask_using_nonzeros
 from mxnet import metric
 from typing import List
+from typing import Tuple
 
 
 class SqueezeDet:
@@ -20,9 +20,7 @@ class SqueezeDet:
 
     def __init__(self):
         self.data = sym.Variable('image')
-        self.label_box = sym.Variable('label_box')
-        self.label_class = sym.Variable('label_class')
-        self.label_score = sym.Variable('label_score')
+        self.label = sym.Variable('label')
         self.net = self.add_forward(self.data)
         self.error = self.add_loss(self.net)
 
@@ -49,48 +47,12 @@ class SqueezeDet:
             dropout11, name='conv12', num_filter=NUM_OUT_CHANNELS,
             kernel=(3, 3), stride=(1, 1), pad=(1, 1))
 
-    def add_loss(self, splits: sym.Variable):
-        """Add loss functions.
-
-        Below, we splice the network output accordingly to compute losses for
-        the following:
-
-            1. Bounding box attributes
-            2. Class probabilities
-            3. IOUS as "confidence scores"
-
-        Below, the ugly splice functions are replacements for reshaping.
-        Instead, split along a dimension into multiple chunks, and then
-        restack the arrays in a consistent way.
-
-        Due to a quirk in MXNet, we create a placeholder label_score. However,
-        we actually use pred_box and label_box to compute IOU (true labels),
-        which are then compared with pred_score.
-        """
-        num_splits = int(NUM_OUT_CHANNELS / ANCHORS_PER_GRID)
-        splits = list(sym.split(splits, num_outputs=num_splits))
-
-        # Compute loss for bounding box
-        pred_box = sym.concat(*splits[:NUM_BBOX_ATTRS])
-        loss_box = mx.sym.Custom(
-            data=pred_box,
-            label=self.label_box,
-            op_type='LinearRegressionOutputWithMask')
-
-        # Compute loss for class probabilities
-        cidx = NUM_BBOX_ATTRS + NUM_CLASSES
-        pred_class = reformat(sym.concat(*splits[NUM_BBOX_ATTRS:cidx]), pkg=sym)
-        label_class = reformat(self.label_class, pkg=sym)
-        loss_class = sym.SoftmaxOutput(data=pred_class, label=label_class)
-
-        # Compute loss for confidence scores - see doc above for explanation
-        pred_score = splits[cidx]
-        loss_iou = mx.symbol.Custom(
-            data=pred_score,
-            label=sym.concat(self.label_score, pred_box, self.label_box),
-            op_type='IOURegressionOutputWithMask')
-
-        return mx.sym.Group([loss_box, loss_class, loss_iou])
+    def add_loss(self, pred: sym.Variable):
+        """Add loss. To save trouble, all passed to one custom layer."""
+        return mx.sym.Custom(
+            data=pred,
+            label=self.label,
+            op_type='BigRegressionOutput')
 
     def _fire_layer(
             self,
@@ -128,95 +90,10 @@ class SqueezeDet:
 ################
 
 
-def reformat(x: nd.array, pkg=nd) -> nd.array:
-    """Reformat array to be (d, ?, ?, ?).
-
-    We re-arrange dimensions, keeping sample attributes together as needed.
-    """
-    return pkg.transpose(
-        pkg.concat(*pkg.split(x, num_outputs=ANCHORS_PER_GRID), dim=0),
-        axes=(1, 0, 2, 3))
-
-
-class IOURegressionOutputWithMask(mx.operator.CustomOp):
-    """Custom operator for IOU regression."""
+class BigRegressionOutput(mx.operator.CustomOp):
 
     def __init__(self, ctx):
-        super(IOURegressionOutputWithMask, self).__init__()
-        self.ctx = ctx
-
-    def forward(self, is_train: bool, req, in_data: List, out_data: List, aux):
-        """Reformat predictions in anticipation of softmax."""
-        pred_ious = np.ravel(self.reformat(in_data[0]))
-        self.assign(out_data[0], req[0], pred_ious)
-
-    def backward(self, req, out_grad, in_data, out_data, in_grad, aux):
-        """Evaluate gradient for mean-squared error."""
-        pred_ious = out_data[0].asnumpy()
-        ious = self.ious(in_data[1])
-        gradient = 2 * (ious - pred_ious)
-
-        # TODO(Alvin): Is this last reshape consistent?
-        self.assign(in_grad[0], req[0], gradient.reshape(in_data[0].shape))
-
-    @staticmethod
-    def reformat(x: nd.array) -> np.array:
-        """Reformat array to be (4, ?, ?, ?).
-
-        Softmax is run across (4, -1) before the array is reshaped to the
-        original dimensions. So, we re-arrange dimensions, keeping bounding
-        box attributes together where needed.
-        """
-        return nd.flatten(reformat(x)).T.asnumpy()
-
-    @classmethod
-    def ious(cls, label: np.array) -> np.array:
-        """Convert the label provided to this layer to ious.
-
-        The labels for this layer are structured a bit strangely:
-
-            b x 9 x 22 x 72: placeholder for labels (hacky mxnet workaround)
-            b x 36 x 22 x 72: predicted bounding boxes
-            b x 36 x 22 x 72: actual bounding boxes
-
-        Thus, we ignore the first set of values, and compute iou using the
-        last two.
-        """
-        pred_idx = ANCHORS_PER_GRID * (1 + NUM_BBOX_ATTRS)
-        pred_box = cls.reformat(nd.slice_axis(
-            label, axis=1, begin=ANCHORS_PER_GRID, end=pred_idx))
-        label_box = cls.reformat(nd.slice_axis(
-            label, axis=1, begin=pred_idx, end=None))
-        return batches_iou(pred_box, label_box)
-
-
-@mx.operator.register("IOURegressionOutputWithMask")
-class IOURegressionOutputWithMaskProp(mx.operator.CustomOpProp):
-    """Supporting utilities for IOU regression."""
-
-    def __init__(self):
-        super(IOURegressionOutputWithMaskProp, self).__init__(need_top_grad=False)
-
-    def list_arguments(self):
-        return ['data', 'label']
-
-    def list_outputs(self):
-        return ['output']
-
-    def infer_shape(self, in_shape):
-        pred_shape = in_shape[0]
-        label_shape = in_shape[0][:]
-        label_shape[1] = ANCHORS_PER_GRID * (NUM_BBOX_ATTRS * 2 + 1)
-        return [pred_shape, label_shape], [(np.prod(pred_shape),)], []
-
-    def create_operator(self, ctx, shapes, dtypes):
-        return IOURegressionOutputWithMask(ctx)
-
-
-class LinearRegressionOutputWithMask(mx.operator.CustomOp):
-
-    def __init__(self, ctx):
-        super(LinearRegressionOutputWithMask, self).__init__()
+        super(BigRegressionOutput, self).__init__()
         self.ctx = ctx
 
     def forward(self, is_train: bool, req, in_data: List, out_data: List, aux):
@@ -225,18 +102,91 @@ class LinearRegressionOutputWithMask(mx.operator.CustomOp):
 
     def backward(self, req, out_grad, in_data, out_data, in_grad, aux):
         """Evaluate gradient for mean-squared error."""
-        pred, label = in_data[0].asnumpy(), in_data[1].asnumpy()
-        pred = mask_using_nonzeros(pred, label)
-        gradient = 2 * (pred - label)
+        pred, label = in_data[0], in_data[1].as_in_context(in_data[0].context)
+
+        pred_bbox, pred_class, pred_score = self.split_block(pred)
+        label_bbox, label_class, _ = self.split_block(label)
+
+        grad_bbox = self.backward_bbox(pred_bbox, label_bbox)
+        grad_class = self.backward_class(pred_class, label_class)
+        grad_score = self.backward_score(pred_bbox, label_bbox, pred_score)
+
+        gradient = self.merge_block((grad_bbox, grad_class, grad_score))
 
         self.assign(in_grad[0], req[0], gradient)
 
+    @staticmethod
+    def split_block(block: nd.array) -> Tuple[nd.array, nd.array, nd.array]:
+        """Split up predicted block into bbox, class, and score chunks.
 
-@mx.operator.register("LinearRegressionOutputWithMask")
-class LinearRegressionOutputWithMaskProp(mx.operator.CustomOpProp):
+        1. Splits all anchors, even for grid cells.
+
+        Specifically, converts from shape (b, NUM_OUT_CHANNELS...) to a list of
+        (b, ANCHORS_PER_GRID, 1, ...). This is employed to keep blocks together,
+        since MXNet does not support multi-dimensional slicing.
+
+        2. Rejoins splits into predicted blocks for bbox, class, and score.
+        """
+        splits = nd.split(block, num_outputs=int(block.shape[1] / ANCHORS_PER_GRID))
+        expanded_splits = [nd.expand_dims(split, axis=2) for split in splits]
+
+        pred_bbox = nd.concat(*expanded_splits[:NUM_BBOX_ATTRS], dim=2)
+        pred_class = nd.concat(*expanded_splits[NUM_BBOX_ATTRS: NUM_BBOX_ATTRS + NUM_CLASSES], dim=2)
+        pred_score = expanded_splits[-1]
+        return pred_bbox, pred_class, pred_score
+
+    @staticmethod
+    def merge_block(splits: Tuple[nd.array, nd.array, nd.array]) -> nd.array:
+        """Merge splits from `split_block` back into one block."""
+        shrunk_splits = []
+        for split in splits:
+            shrunk_split = nd.split(
+                split, num_outputs=split.shape[2], axis=2, squeeze_axis=True)
+            if split.shape[2] == 1:
+                shrunk_split = [shrunk_split]
+            shrunk_splits.extend(shrunk_split)
+        return nd.concat(*shrunk_splits, dim=1)
+
+    def backward_bbox(
+            self,
+            pred_bbox: nd.array,
+            label_bbox: nd.array) -> nd.array:
+        """Compute gradient for bbox values.
+
+        Mean-squared error between the bounding box values.
+        """
+        return 2 * (pred_bbox - label_bbox)
+
+    def backward_class(
+            self,
+            pred_class: nd.array,
+            label_class: nd.array) -> nd.array:
+        """Compute gradient for class regression.
+
+        Cross entropy error.
+        """
+        return pred_class * nd.log(1 - label_class) + pred_class * nd.log(label_class)
+
+    def backward_score(
+            self,
+            pred_bbox: nd.array,
+            label_bbox: nd.array,
+            pred_score: nd.array) -> nd.array:
+        """Compute gradient for confidence scores.
+
+        Mean-squared error between the true IOUs and predicted confidence.
+        """
+        # label_iou = nd_batch_iou(pred_bbox, label_bbox)
+        # return 2 * (pred_score - label_iou)
+        return pred_score
+
+
+
+@mx.operator.register("BigRegressionOutput")
+class BigRegressionOutputProp(mx.operator.CustomOpProp):
 
     def __init__(self):
-        super(LinearRegressionOutputWithMaskProp, self).__init__(need_top_grad=False)
+        super(BigRegressionOutputProp, self).__init__(need_top_grad=False)
 
     def list_arguments(self):
         return ['data', 'label']
@@ -250,62 +200,10 @@ class LinearRegressionOutputWithMaskProp(mx.operator.CustomOpProp):
         return [pred_shape, label_shape], [pred_shape], []
 
     def create_operator(self, ctx, shapes, dtypes):
-        return LinearRegressionOutputWithMask(ctx)
+        return BigRegressionOutput(ctx)
 
 
 ################
 # MXNET LOSSES #
 ################
 
-
-class BboxError(metric.EvalMetric):
-    """Mean-squared error for bounding box loss."""
-
-    def __init__(self):
-        super(BboxError, self).__init__('Bbox')
-
-    def update(self, labels: nd.array, preds: nd.array) -> float:
-        metric.check_label_shapes(labels, preds)
-
-        label, pred = labels[0].asnumpy(), preds[0].asnumpy()
-        error = ((pred - label) ** 2).sum()
-        self.sum_metric += error
-        self.num_inst += NUM_ANCHORS
-        return error / NUM_ANCHORS
-
-
-class ClassError(metric.EvalMetric):
-    """Cross-entropy loss for class probabilities."""
-
-    def __init__(self):
-        super(ClassError, self).__init__('Class')
-
-    def update(self, labels: nd.array, preds: nd.array) -> float:
-        metric.check_label_shapes(labels, preds)
-
-        label = nd.array(
-            reformat(labels[1]).asnumpy().ravel().round().astype(np.int))
-        pred = nd.flatten(preds[1]).T.as_in_context(label.context)
-        error = nd.softmax_cross_entropy(pred, label).asscalar()
-        self.sum_metric += error
-        self.num_inst += NUM_ANCHORS
-        return error / NUM_ANCHORS
-
-
-class IOUError(metric.EvalMetric):
-    """Mean-squared error between confidence scores and actual IOUs."""
-
-    def __init__(self):
-        super(IOUError, self).__init__('IOU')
-
-    def update(self, labels: nd.array, preds: nd.array) -> float:
-        metric.check_label_shapes(labels, preds)
-
-        pred = preds[2].asnumpy()
-        pred_box = IOURegressionOutputWithMask.reformat(preds[0])
-        label_box = IOURegressionOutputWithMask.reformat(labels[0])
-        ious = batches_iou(pred_box, label_box)
-        error = ((pred - ious) ** 2).sum()
-        self.sum_metric += error
-        self.num_inst += NUM_ANCHORS
-        return error / NUM_ANCHORS

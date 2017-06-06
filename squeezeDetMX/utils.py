@@ -15,6 +15,7 @@ import os
 import os.path
 
 from .constants import ANCHORS_PER_GRID
+from .constants import NUM_OUT_CHANNELS
 from .constants import NUM_BBOX_ATTRS
 from .constants import NUM_CLASSES
 from .constants import GRID_WIDTH
@@ -96,6 +97,40 @@ def mask_using_nonzeros(data: np.array, as_mask: np.array) -> np.array:
     """
     assert data.shape == as_mask.shape
     return (as_mask != 0).astype(np.uint8) * data
+
+
+def nd_iou(box1: nd.array, box2: nd.array) -> nd.array:
+    """Compute Intersection-Over-Union of a symbol and a box.
+    From original repository, written by Bichen Wu
+    """
+    lr = nd.maximum(
+        nd.minimum(box1[0] + 0.5 * box1[2], box2[0] + 0.5 * box2[2]) -
+        nd.maximum(box1[0] - 0.5 * box1[2], box2[0] - 0.5 * box2[2]),
+        0
+    )
+    tb = nd.maximum(
+        nd.minimum(box1[1] + 0.5 * box1[3], box2[1] + 0.5 * box2[3]) -
+        nd.maximum(box1[1] - 0.5 * box1[3], box2[1] - 0.5 * box2[3]),
+        0
+    )
+    inter = lr * tb
+    union = box1[2] * box1[2] + box2[2] * box2[3] - inter
+    return inter / union
+
+
+def nd_batch_iou(boxes: nd.array, box: nd.array) -> nd.array:
+    """
+    Compute the Intersection-Over-Union of a batch of boxes with another
+    box.
+    Args:
+        boxes: 2D array of [cx, cy, width, height].
+        box: a single array of [cx, cy, width, height]
+    Returns:
+        ious: array of a float number in range [0, 1].
+    """
+    n = boxes.shape[0]
+    repacked_boxes = [nd.slice(boxes, (0, i), (n, i+1)) for i in range(4)]
+    return nd_iou(repacked_boxes, box)
 
 
 def batch_iou(boxes: np.array, box: np.array) -> np.array:
@@ -222,12 +257,7 @@ class Reader(io.DataIter):
         self.img_shape = img_shape
         self.provide_data = [('image', (batch_size, *img_shape))]
         self.provide_label = [
-            ('label_box', (
-                batch_size, ANCHORS_PER_GRID * NUM_BBOX_ATTRS, GRID_HEIGHT, GRID_WIDTH)),
-            ('label_score', (
-                batch_size, ANCHORS_PER_GRID, GRID_HEIGHT, GRID_WIDTH)),
-            ('label_class', (
-                batch_size, ANCHORS_PER_GRID * NUM_CLASSES, GRID_HEIGHT, GRID_WIDTH))]
+            ('label', (batch_size, NUM_OUT_CHANNELS, GRID_HEIGHT, GRID_WIDTH))]
 
         if filename is not None:
             self.record = mx.recordio.MXRecordIO(filename, 'r')
@@ -260,11 +290,10 @@ class Reader(io.DataIter):
             batch_labels.append(self.read_label())
             if self.record:
                 self.bytedata = self.record.read()
-        batch_label_box, batch_label_class, batch_label_score = \
-            self.batch_label_to_mx(batch_labels)
+        batch_labels = self.batch_label_to_mx(batch_labels)
         return io.DataBatch(
             [batch_images],
-            [batch_label_box, batch_label_score, batch_label_class],
+            [batch_labels],
             self.batch_size-1-i)
 
     def read_image(self):
@@ -316,12 +345,7 @@ class Reader(io.DataIter):
             - last ANCHORS_PER_GRID * NUM_CLASSES with one hot class labels
         """
         taken_anchor_indices, num_labels = set(), len(labels)
-        label_box = np.zeros((
-            num_labels, ANCHORS_PER_GRID * NUM_BBOX_ATTRS, GRID_HEIGHT, GRID_WIDTH))
-        label_class = np.zeros((
-            num_labels, ANCHORS_PER_GRID * NUM_CLASSES, GRID_HEIGHT, GRID_WIDTH))
-        label_placeholder = np.zeros((
-            num_labels, ANCHORS_PER_GRID, GRID_HEIGHT, GRID_WIDTH))
+        label = np.zeros((num_labels, NUM_OUT_CHANNELS, GRID_HEIGHT, GRID_WIDTH))
         one_hot_mapping = np.eye(NUM_CLASSES)
         for i, bboxes in enumerate(labels):
             for bbox in bboxes:
@@ -344,13 +368,13 @@ class Reader(io.DataIter):
                 air = anchor_index % ANCHORS_PER_GRID
 
                 st = air * NUM_BBOX_ATTRS
-                label_box[i, st: st + NUM_BBOX_ATTRS, grid_x, grid_y] = \
+                label[i, st: st + NUM_BBOX_ATTRS, grid_x, grid_y] = \
                     bbox[:NUM_BBOX_ATTRS]
 
-                st = air * NUM_CLASSES
-                label_class[i, st: st + NUM_CLASSES, grid_x, grid_y] = \
+                st += NUM_BBOX_ATTRS
+                label[i, st: st + NUM_CLASSES, grid_x, grid_y] = \
                     one_hot_mapping[int(bbox[-1])]
-        return map(nd.array, (label_box, label_class, label_placeholder))
+        return nd.array(label)
 
     def step(self, steps):
         """Step forward by `steps` in the byte buffer."""

@@ -16,9 +16,6 @@ import time
 from mxnet import metric
 
 from squeezeDetMX.model import SqueezeDet
-from squeezeDetMX.model import BboxError
-from squeezeDetMX.model import ClassError
-from squeezeDetMX.model import IOUError
 from squeezeDetMX.utils import Reader
 from squeezeDetMX.utils import build_module
 from squeezeDetMX.utils import setup_logger
@@ -47,8 +44,7 @@ def main():
             eval_data=val_iter,
             num_epoch=50,
             batch_end_callback=mx.callback.Speedometer(batch_size, 10),
-            eval_metric=metric.CompositeEvalMetric(
-                metrics=[BboxError(), ClassError(), IOUError()]),
+            eval_metric=mx.metric.create(lambda label, pred: 0),
             epoch_end_callback=mx.callback.do_checkpoint('squeezeDetMX', 1))
     except KeyboardInterrupt:
         module.save_params('squeezeDet-{}-9999.params'.format(
