@@ -11,6 +11,7 @@ Options:
 import docopt
 import mxnet as mx
 import os.path
+import numpy as np
 import time
 
 from mxnet import metric
@@ -37,7 +38,10 @@ def main():
 
     model = SqueezeDet()
     module = build_module(model.error, 'squeezeDetMX', train_iter,
+                          learning_rate=1e-7,
                           ctx=[mx.gpu(0), mx.gpu(1), mx.gpu(2), mx.gpu(3)])
+
+    np.seterr('raise')
 
     try:
         module.fit(

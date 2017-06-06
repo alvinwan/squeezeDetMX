@@ -31,7 +31,7 @@ from .constants import BBOX_FORMAT
 
 def build_module(symbol, name, data_iter,
         inputs_need_grad=False,
-        learning_rate=1e-7,
+        learning_rate=1e-10,
         momentum=0.9,
         wd=0.0001,
         lr_scheduler=None,

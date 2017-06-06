@@ -5,6 +5,7 @@ import mxnet.ndarray as nd
 import mxnet.symbol as sym
 import numpy as np
 from .constants import NUM_OUT_CHANNELS
+from .constants import EPSILON
 from .constants import ANCHORS_PER_GRID
 from .constants import NUM_CLASSES
 from .constants import NUM_BBOX_ATTRS
@@ -13,8 +14,6 @@ from .utils import nd_batch_iou
 from .utils import mask_with
 from typing import List
 from typing import Tuple
-
-np.seterr('raise')
 
 
 class SqueezeDet:
@@ -99,8 +98,15 @@ class BigRegressionOutput(mx.operator.CustomOp):
         self.ctx = ctx
 
     def forward(self, is_train: bool, req, in_data: List, out_data: List, aux):
-        """Forward predicted values."""
-        self.assign(out_data[0], req[0], in_data[0])
+        """Forward predicted values. Apply sigmoid to labels for class."""
+        pred = in_data[0]
+        pred_bbox, pred_class, pred_score = self.split_block(pred)
+
+        pred_class = nd.sigmoid(pred_class)
+
+        pred_merged = self.merge_block((pred_bbox, pred_class, pred_score))
+
+        self.assign(out_data[0], req[0], pred_merged)
 
     def backward(self, req, out_grad, in_data, out_data, in_grad, aux):
         """Evaluate gradient for mean-squared error."""
@@ -153,23 +159,25 @@ class BigRegressionOutput(mx.operator.CustomOp):
             pred_bbox: nd.array,
             label_bbox: nd.array,
             mask: nd.array) -> nd.array:
-        """Compute gradient for bbox values.
+        """Compute gradient for bbox values. Learning: 1e-7
 
         Mean-squared error between the bounding box values.
         """
         masked_pred_bbox = mask_with(pred_bbox, mask)
-        return 2 * (masked_pred_bbox - label_bbox)
+        return masked_pred_bbox * 0
+        # return 2 * (masked_pred_bbox - label_bbox)
 
     def backward_class(
             self,
             pred_class: nd.array,
             label_class: nd.array) -> nd.array:
-        """Compute gradient for class regression.
+        """Compute gradient for class regression. Learning: 1e-7
 
         Cross entropy error.
         """
-        return nd.zeros(pred_class.shape).as_in_context(pred_class.context)
-        # return pred_class * nd.log(1 - label_class) + pred_class * nd.log(label_class)
+        # return nd.zeros(pred_class.shape).as_in_context(pred_class.context)
+        return label_class / (pred_class + EPSILON) + \
+               (1 - label_class) / (1 - pred_class + EPSILON)
 
     def backward_score(
             self,
@@ -215,10 +223,19 @@ class BigRegressionOutputProp(mx.operator.CustomOpProp):
 
 
 def bigMetric(label: nd.array, pred: nd.array) -> float:
-    mask = label[:, -ANCHORS_PER_GRID * NUM_CHANNELS:, :, :]
+    mask = label[:, -ANCHORS_PER_GRID:, :, :]
+
     pred_bbox = pred[:, :ANCHORS_PER_GRID * NUM_BBOX_ATTRS, :, :]
-    masked_pred_bbox = mask_with(pred_bbox, mask)
+    masked_pred_bbox = pred_bbox
+    # masked_pred_bbox = pred_bbox * mask
     label_bbox = label[:, :ANCHORS_PER_GRID * NUM_BBOX_ATTRS, :, :]
     if np.sum(mask) == 0:
         return 0
-    return np.sum(np.square(masked_pred_bbox - label_bbox)) / np.sum(mask)
+    # loss_bbox = ((masked_pred_bbox - label_bbox) ** 2).sum() / mask.sum()
+
+    st = ANCHORS_PER_GRID * NUM_BBOX_ATTRS
+    pred_class = pred[:, st: st + ANCHORS_PER_GRID * NUM_CLASSES, :, :]
+    label_class = label[:, st: st + ANCHORS_PER_GRID * NUM_CLASSES, :, :]
+    loss_class = (label_class * -np.log(pred_class + EPSILON) +
+               (1 - label_class) * -np.log(1 - pred_class + EPSILON)).sum() / mask.sum()
+    return loss_class
