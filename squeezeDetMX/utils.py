@@ -18,7 +18,6 @@ from .constants import ANCHORS_PER_GRID
 from .constants import NUM_OUT_CHANNELS
 from .constants import NUM_BBOX_ATTRS
 from .constants import NUM_CLASSES
-from .constants import NUM_CHANNELS
 from .constants import GRID_WIDTH
 from .constants import GRID_HEIGHT
 from .constants import IMAGE_WIDTH
@@ -59,7 +58,7 @@ def build_module(symbol, name, data_iter,
             learning_rate=learning_rate,
             momentum=momentum,
             wd=wd,
-            lr_scheduler=mx.lr_scheduler.FactorScheduler(10000, 0.5)
+            lr_scheduler=mx.lr_scheduler.FactorScheduler(2000, 0.1)
             if lr_scheduler is None else lr_scheduler,
         )
     )
@@ -88,11 +87,6 @@ def image_to_jpeg_bytes(image: np.ndarray) -> bytes:
 
 def jpeg_bytes_to_image(bytedata: bytes) -> np.array:
     return mx.image.imdecode(bytedata, to_rgb=False).asnumpy().astype(np.float32)
-
-
-def mask_with(data: np.array, mask: np.array) -> np.array:
-    """Mask the data."""
-    return data * mask.broadcast_to(data.shape)
 
 
 def nd_iou(box1: nd.array, box2: nd.array) -> nd.array:
@@ -282,6 +276,7 @@ class Reader(io.DataIter):
         batch_labels = []
         for i in range(self.batch_size):
             batch_images[i][:] = self.image_to_mx(self.read_image())
+            assert not np.isnan(nd.sum(batch_images[i][:]).asscalar())
             batch_labels.append(self.read_label())
             if self.record:
                 self.bytedata = self.record.read()
