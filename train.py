@@ -6,6 +6,8 @@ Usage:
 Options:
     --data=<path>           Path to root directory of data. [default: ./data/KITTI]
     --batch_size=<size>     Number of samples in a single batch [default: 20]
+    --learning_rate=<lr>    Learning rate for neural net [default: 1e-7]
+    --momentum=<mom>        Momentum for neural net [default: 0.9]
 """
 
 import docopt
@@ -28,6 +30,8 @@ def main():
     arguments = docopt.docopt(__doc__)
     data_root = arguments['--data']
     batch_size = int(arguments['--batch_size'])
+    learning_rate = float(arguments['--learning_rate'])
+    momentum = float(arguments['--momentum'])
 
     train_path = os.path.join(data_root, 'train.brick')
     train_iter = Reader(train_path, batch_size=batch_size)
@@ -38,7 +42,8 @@ def main():
 
     model = SqueezeDet()
     module = build_module(model.error, 'squeezeDetMX', train_iter,
-                          learning_rate=1e-7,
+                          learning_rate=learning_rate,
+                          momentum=momentum,
                           ctx=[mx.gpu(0), mx.gpu(1), mx.gpu(2), mx.gpu(3)])
 
     np.seterr('raise')
