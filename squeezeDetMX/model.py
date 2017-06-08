@@ -99,10 +99,11 @@ class BigRegressionOutput(mx.operator.CustomOp):
 
     def forward(self, is_train: bool, req, in_data: List, out_data: List, aux):
         """Forward predicted values. Apply sigmoid to labels for class."""
-        pred = in_data[0]
+        pred, label = in_data[0], in_data[1].as_in_context(in_data[0].context)
         pred_bbox, pred_class, pred_score = self.split_block(pred)
+        _, _, mask = self.split_block(label)
 
-        pred_class = nd.sigmoid(pred_class)
+        pred_bbox *= mask
 
         pred_merged = self.merge_block((pred_bbox, pred_class, pred_score))
 
@@ -116,8 +117,8 @@ class BigRegressionOutput(mx.operator.CustomOp):
         label_bbox, label_class, mask = self.split_block(label)
 
         grad_bbox = self.backward_bbox(pred_bbox, label_bbox, mask)
-        grad_class = self.backward_class(pred_class, label_class)
-        grad_score = self.backward_score(pred_bbox, label_bbox, pred_score)
+        grad_class = pred_class * 0
+        grad_score = pred_score * 0
         gradient = self.merge_block((grad_bbox, grad_class, grad_score))
 
         self.assign(in_grad[0], req[0], gradient)
@@ -164,36 +165,7 @@ class BigRegressionOutput(mx.operator.CustomOp):
         Mean-squared error between the bounding box values.
         """
         masked_pred_bbox = mask_with(pred_bbox, mask)
-        return masked_pred_bbox * 0
-        # return 2 * (masked_pred_bbox - label_bbox)
-
-    def backward_class(
-            self,
-            pred_class: nd.array,
-            label_class: nd.array) -> nd.array:
-        """Compute gradient for class regression. Learning: 1e-7
-
-        Cross entropy error.
-        """
-        # return nd.zeros(pred_class.shape).as_in_context(pred_class.context)
-        return label_class / (pred_class + EPSILON) + \
-               (1 - label_class) / (1 - pred_class + EPSILON)
-
-    def backward_score(
-            self,
-            pred_bbox: nd.array,
-            label_bbox: nd.array,
-            pred_score: nd.array) -> nd.array:
-        """Compute gradient for confidence scores.
-
-        Mean-squared error between the true IOUs and predicted confidence.
-        """
-        pred = nd.transpose(pred_bbox, axes=(2, 0, 1, 3, 4))
-        label = nd.transpose(label_bbox, axes=(2, 0, 1, 3, 4))
-        label_iou = nd_batch_iou(pred, label)
-        iou = nd.transpose(label_iou, axes=(1, 2, 0, 3, 4))
-        return nd.zeros(pred_score.shape).as_in_context(pred_bbox.context)
-        # return 2 * (pred_score - iou)
+        return 2 * (masked_pred_bbox - label_bbox)
 
 
 @mx.operator.register("BigRegressionOutput")
@@ -221,21 +193,18 @@ class BigRegressionOutputProp(mx.operator.CustomOpProp):
 # MXNET LOSSES #
 ################
 
+def transform(x: nd.array) -> nd.array:
+    return np.transpose(np.concatenate([
+        np.expand_dims(split, 2)
+        for split in np.split(x, x.shape[1] / ANCHORS_PER_GRID, 1)], 2), (2, 0, 1, 3, 4))
+
 
 def bigMetric(label: nd.array, pred: nd.array) -> float:
-    mask = label[:, -ANCHORS_PER_GRID:, :, :]
-
-    pred_bbox = pred[:, :ANCHORS_PER_GRID * NUM_BBOX_ATTRS, :, :]
-    masked_pred_bbox = pred_bbox
-    # masked_pred_bbox = pred_bbox * mask
-    label_bbox = label[:, :ANCHORS_PER_GRID * NUM_BBOX_ATTRS, :, :]
+    mask = transform(label[:, -ANCHORS_PER_GRID:, :, :])
     if np.sum(mask) == 0:
         return 0
-    # loss_bbox = ((masked_pred_bbox - label_bbox) ** 2).sum() / mask.sum()
 
-    st = ANCHORS_PER_GRID * NUM_BBOX_ATTRS
-    pred_class = pred[:, st: st + ANCHORS_PER_GRID * NUM_CLASSES, :, :]
-    label_class = label[:, st: st + ANCHORS_PER_GRID * NUM_CLASSES, :, :]
-    loss_class = (label_class * -np.log(pred_class + EPSILON) +
-               (1 - label_class) * -np.log(1 - pred_class + EPSILON)).sum() / mask.sum()
-    return loss_class
+    pred_bbox = transform(pred[:, :ANCHORS_PER_GRID * NUM_BBOX_ATTRS, :, :])
+    label_bbox = transform(label[:, :ANCHORS_PER_GRID * NUM_BBOX_ATTRS, :, :])
+    loss_bbox = ((pred_bbox - label_bbox) ** 2).sum() / mask.sum() * 1e2
+    return loss_bbox

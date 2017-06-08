@@ -371,10 +371,6 @@ class Reader(io.DataIter):
                 st = air * NUM_BBOX_ATTRS
                 label[i, st: st + NUM_BBOX_ATTRS, grid_x, grid_y] = deltas
 
-                st = ANCHORS_PER_GRID * NUM_BBOX_ATTRS + air * NUM_CLASSES
-                label[i, st: st + NUM_CLASSES, grid_x, grid_y] = \
-                    one_hot_mapping[int(bbox[-1])]
-
                 st = ANCHORS_PER_GRID * (NUM_BBOX_ATTRS + NUM_CLASSES) + air
                 label[i, st, grid_x, grid_y] = 1
         return nd.array(label)
