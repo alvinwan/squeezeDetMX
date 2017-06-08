@@ -90,11 +90,6 @@ def jpeg_bytes_to_image(bytedata: bytes) -> np.array:
     return mx.image.imdecode(bytedata, to_rgb=False).asnumpy().astype(np.float32)
 
 
-def mask_with(data: np.array, mask: np.array) -> np.array:
-    """Mask the data."""
-    return data * mask.broadcast_to(data.shape)
-
-
 def nd_iou(box1: nd.array, box2: nd.array) -> nd.array:
     """Compute Intersection-Over-Union of a symbol and a box.
     From original repository, written by Bichen Wu
@@ -371,7 +366,7 @@ class Reader(io.DataIter):
                 st = air * NUM_BBOX_ATTRS
                 label[i, st: st + NUM_BBOX_ATTRS, grid_x, grid_y] = deltas
 
-                st = ANCHORS_PER_GRID * (NUM_BBOX_ATTRS + NUM_CLASSES) + air
+                st = ANCHORS_PER_GRID * NUM_BBOX_ATTRS + air
                 label[i, st, grid_x, grid_y] = 1
         return nd.array(label)
 
