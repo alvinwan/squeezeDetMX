@@ -8,6 +8,7 @@ Options:
     --batch_size=<size>     Number of samples in a single batch [default: 20]
     --learning_rate=<lr>    Learning rate for neural net [default: 1e-7]
     --momentum=<mom>        Momentum for neural net [default: 0.9]
+    --n_epochs=<n>          Number of epochs to run for [default: 50]
 """
 
 import docopt
@@ -32,6 +33,7 @@ def main():
     batch_size = int(arguments['--batch_size'])
     learning_rate = float(arguments['--learning_rate'])
     momentum = float(arguments['--momentum'])
+    num_epochs = int(arguments['--n_epochs'])
 
     train_path = os.path.join(data_root, 'train.brick')
     train_iter = Reader(train_path, batch_size=batch_size)
@@ -52,7 +54,7 @@ def main():
         module.fit(
             train_data=pre_iter,
             eval_data=val_iter,
-            num_epoch=50,
+            num_epoch=num_epochs,
             batch_end_callback=mx.callback.Speedometer(batch_size, 10),
             eval_metric=mx.metric.create(bigMetric),
             epoch_end_callback=mx.callback.do_checkpoint('squeezeDetMX', 1))
