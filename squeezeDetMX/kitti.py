@@ -8,6 +8,8 @@ import os
 import numpy as np
 
 from .constants import CLASS_TO_INDEX
+from .constants import IMAGE_WIDTH
+from .constants import IMAGE_HEIGHT
 from .utils import bbox_transform_inv
 
 
@@ -23,10 +25,15 @@ def grab_images_labels(
         if i % 1000 == 0 and i > 0:
             print(' * Loaded', i, 'images.')
         image_path = os.path.join(data_root, 'training/image_2/%s.png' % _id)
-        image_data.append(cv2.imread(image_path))
+        image = cv2.imread(image_path)
+        scale_x = image.shape[0] / IMAGE_WIDTH
+        scale_y = image.shape[1] / IMAGE_HEIGHT
+        image = cv2.resize(image, (IMAGE_WIDTH, IMAGE_HEIGHT))
+        image_data.append(image)
         label_path = os.path.join(data_root, 'training/label_2/%s.txt' % _id)
         with open(label_path) as f:
-            image_labels.append(read_bboxes(f.read().splitlines()))
+            label = read_bboxes(f.read().splitlines(), scale_x, scale_y)
+            image_labels.append(label)
     if shuffle:
         groups = [group for group in zip(image_data, image_labels)]
         np.random.shuffle(groups)
@@ -34,7 +41,7 @@ def grab_images_labels(
     return image_data, image_labels
 
 
-def read_bboxes(objects: List[str]) -> List[List[float]]:
+def read_bboxes(objects: List[str], scale_x: float=1.0, scale_y: float=1.0) -> List[List[float]]:
     """Read bounding boxes from provided serialized data."""
     bboxes = []
     for object_string in objects:
@@ -44,5 +51,5 @@ def read_bboxes(objects: List[str]) -> List[List[float]]:
             continue
         category = CLASS_TO_INDEX[category_index]
         x, y, w, h = bbox_transform_inv(*map(float, object_data[4:8]))
-        bboxes.append([x, y, w, h, category])
+        bboxes.append([x / scale_x, y / scale_y, w, h, category])
     return bboxes

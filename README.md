@@ -1,5 +1,7 @@
 # SqueezeDetMX
 
+> This repository is built in Python3.6. With small syntax changes, it could be adapted to Python3.*. To my knowledge, those changes would render the repository backwards-compatible with Python2.*.
+
 This repository contains an implementation of SqueezeDet, a ["unified, small, low power fully convolutional neural network for real-time object detection for autonomous driving"](https://arxiv.org/abs/1612.01051), in MXNet. Note that this *only* runs on Python3. It additionally holds utilities for reading and writing compact binary data, on top of deserialization functions for the KITTI dataset.
 
 You can find the original squeezeDet implementation, using Tensorflow, [here](https://github.com/BichenWuUCB/squeezeDet). Parts of the codebase were taken from the original repository; all such instances have been cited accordingly.

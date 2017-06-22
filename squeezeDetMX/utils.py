@@ -275,10 +275,7 @@ class Reader(io.DataIter):
     @staticmethod
     def image_to_mx(image: np.array) -> nd.array:
         """Convert a standard numpy array into MXNet-ready arrays."""
-        return nd.transpose(
-            imresize(  # TODO(Alvin): imresize should not be needed!
-                nd.array(image), IMAGE_WIDTH, IMAGE_HEIGHT, interp=2),
-                axes=(2, 0, 1)) / 128. - 1.
+        return nd.transpose(image, axes=(2, 0, 1)) / 128. - 1.
 
     def read_label(self):
         """Read label from the byte buffer."""
